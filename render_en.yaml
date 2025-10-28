@@ -9,4 +9,5 @@ services:
       - key: TELEGRAM_BOT_TOKEN_EN
         value: 7835480792:AAFo7VckIQHLph1grNxknhAXH1_HWph-Q1o
       - key: RENDER_EXTERNAL_URL_EN
-        value: https://fxwave-risk-bot.onrender.com
+
+        value: https://risk-management-bot-en.onrender.com
