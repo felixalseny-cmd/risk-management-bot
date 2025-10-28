@@ -453,6 +453,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
+python-telegram-bot==20.7
+python-dotenv==1.0.0
+cachetools==5.3.0
+
 def main():
     """Запуск бота"""
     # Создаем Application
@@ -486,3 +490,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
