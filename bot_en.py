@@ -32,7 +32,7 @@ PIP_VALUES = {
     'EURUSD': 10, 'GBPUSD': 10, 'USDJPY': 9, 'USDCHF': 10,
     'USDCAD': 10, 'AUDUSD': 10, 'NZDUSD': 10, 'EURGBP': 10,
     'EURJPY': 9, 'GBPJPY': 9, 'XAUUSD': 10, 'XAGUSD': 50,
-    'BTCUSD': 1, 'ETHUSD': 1, 'XAUUSD': 10, 'XAGUSD': 50
+    'BTCUSD': 1, 'ETHUSD': 1
 }
 LEVERAGES = ['1:100', '1:200', '1:500', '1:1000', '1:2000']
 
@@ -547,4 +547,5 @@ def main():
     )
 
 if __name__ == '__main__':
+
     main()
