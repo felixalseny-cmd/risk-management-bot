@@ -94,7 +94,7 @@ class RiskCalculator:
             'required_margin': required_margin,
             'risk_percent': (risk_amount / deposit) * 100,
             'max_risk_lots': max_lots_by_risk,
-            'max_margin_lots': max_largin_lots
+            'max_margin_lots': max_lots_by_margin
         }
 
     @staticmethod
@@ -129,6 +129,9 @@ class RiskCalculator:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало разговора"""
+    if update.message is None:
+        return ConversationHandler.END
+        
     user_id = update.message.from_user.id
     user_data[user_id] = {}
     
@@ -143,10 +146,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка ввода депозита"""
+    if update.message is None:
+        return ConversationHandler.END
+        
     user_id = update.message.from_user.id
     
     try:
-        deposit = float(update.message.text.replace(',', ''))
+        deposit_text = update.message.text.replace(',', '').replace(' ', '')
+        deposit = float(deposit_text)
         if deposit <= 0:
             await update.message.reply_text("❌ Депозит должен быть положительным числом. Попробуйте еще раз:")
             return DEPOSIT
@@ -175,6 +182,9 @@ async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора плеча"""
     query = update.callback_query
+    if query is None:
+        return ConversationHandler.END
+        
     await query.answer()
     
     user_id = query.from_user.id
@@ -206,6 +216,9 @@ async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def process_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора валютной пары"""
     query = update.callback_query
+    if query is None:
+        return ConversationHandler.END
+        
     await query.answer()
     
     user_id = query.from_user.id
@@ -221,6 +234,9 @@ async def process_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка цены входа"""
+    if update.message is None:
+        return ConversationHandler.END
+        
     user_id = update.message.from_user.id
     
     try:
@@ -240,6 +256,9 @@ async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка стоп-лосса"""
+    if update.message is None:
+        return ConversationHandler.END
+        
     user_id = update.message.from_user.id
     
     try:
@@ -259,6 +278,9 @@ async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка тейк-профитов"""
+    if update.message is None:
+        return ConversationHandler.END
+        
     user_id = update.message.from_user.id
     
     try:
@@ -282,6 +304,9 @@ async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def process_volume_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка распределения объемов и расчет результатов"""
+    if update.message is None:
+        return ConversationHandler.END
+        
     user_id = update.message.from_user.id
     
     try:
@@ -370,9 +395,16 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
 async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Сохранение пресета стратегии"""
     query = update.callback_query
+    if query is None:
+        return
+        
     await query.answer()
     
     user_id = query.from_user.id
+    
+    if user_id not in user_data:
+        await query.edit_message_text("❌ Ошибка: данные не найдены. Начните новый расчет с /start")
+        return
     
     if 'presets' not in user_data[user_id]:
         user_data[user_id]['presets'] = []
@@ -392,9 +424,12 @@ async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показать сохраненные пресеты"""
+    if update.message is None:
+        return
+        
     user_id = update.message.from_user.id
     
-    if 'presets' not in user_data[user_id] or not user_data[user_id]['presets']:
+    if user_id not in user_data or 'presets' not in user_data[user_id] or not user_data[user_id]['presets']:
         await update.message.reply_text("📝 У вас нет сохраненных пресетов.")
         return
     
@@ -415,6 +450,9 @@ async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отмена разговора"""
+    if update.message is None:
+        return ConversationHandler.END
+        
     await update.message.reply_text(
         'Расчет отменен. Используйте /start для нового расчета.'
     )
@@ -422,6 +460,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Справка по боту"""
+    if update.message is None:
+        return
+        
     help_text = """
 🤖 *Risk Management Bot - Помощь*
 
@@ -447,6 +488,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 - Сохранение пресетов стратегий
     """
     await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def new_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Начать новый расчет"""
+    query = update.callback_query
+    if query is None:
+        return
+        
+    await query.answer()
+    await start(update, context)
 
 def main() -> None:
     """Запуск бота"""
@@ -479,7 +529,7 @@ def main() -> None:
     application.add_handler(CommandHandler('help', help_command))
     application.add_handler(CommandHandler('presets', show_presets))
     application.add_handler(CallbackQueryHandler(save_preset, pattern='^save_preset$'))
-    application.add_handler(CallbackQueryHandler(start, pattern='^new_calculation$'))
+    application.add_handler(CallbackQueryHandler(new_calculation, pattern='^new_calculation$'))
     
     # Запускаем бота
     logger.info("Бот запущен...")
