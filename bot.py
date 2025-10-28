@@ -9,11 +9,11 @@ from telegram import (
     InlineKeyboardMarkup
 )
 from telegram.ext import (
-    Application,
+    Updater,
     CommandHandler,
-    ContextTypes,
+    CallbackContext,
     MessageHandler,
-    filters,
+    Filters,
     ConversationHandler,
     CallbackQueryHandler
 )
@@ -127,15 +127,12 @@ class RiskCalculator:
         
         return profits
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def start(update: Update, context: CallbackContext) -> int:
     """Начало разговора"""
-    if update.message is None:
-        return ConversationHandler.END
-        
     user_id = update.message.from_user.id
     user_data[user_id] = {}
     
-    await update.message.reply_text(
+    update.message.reply_text(
         "🎯 *Risk Management Calculator Bot*\n\n"
         "Я помогу рассчитать оптимальный объем позиции с учетом рисков.\n\n"
         "Давайте начнем! Введите сумму депозита в USD:",
@@ -144,18 +141,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     return DEPOSIT
 
-async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def process_deposit(update: Update, context: CallbackContext) -> int:
     """Обработка ввода депозита"""
-    if update.message is None:
-        return ConversationHandler.END
-        
     user_id = update.message.from_user.id
     
     try:
         deposit_text = update.message.text.replace(',', '').replace(' ', '')
         deposit = float(deposit_text)
         if deposit <= 0:
-            await update.message.reply_text("❌ Депозит должен быть положительным числом. Попробуйте еще раз:")
+            update.message.reply_text("❌ Депозит должен быть положительным числом. Попробуйте еще раз:")
             return DEPOSIT
         
         user_data[user_id]['deposit'] = deposit
@@ -167,7 +161,7 @@ async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(
+        update.message.reply_text(
             f"✅ Депозит: ${deposit:,.2f}\n\n"
             "Теперь выберите кредитное плечо:",
             reply_markup=reply_markup
@@ -176,16 +170,13 @@ async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return LEVERAGE
         
     except ValueError:
-        await update.message.reply_text("❌ Пожалуйста, введите корректную сумму депозита:")
+        update.message.reply_text("❌ Пожалуйста, введите корректную сумму депозита:")
         return DEPOSIT
 
-async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def process_leverage(update: Update, context: CallbackContext) -> int:
     """Обработка выбора плеча"""
     query = update.callback_query
-    if query is None:
-        return ConversationHandler.END
-        
-    await query.answer()
+    query.answer()
     
     user_id = query.from_user.id
     leverage = query.data.replace('leverage_', '')
@@ -205,7 +196,7 @@ async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text(
+    query.edit_message_text(
         f"✅ Плечо: {leverage}\n\n"
         "Выберите валютную пару:",
         reply_markup=reply_markup
@@ -213,37 +204,31 @@ async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     return CURRENCY
 
-async def process_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def process_currency(update: Update, context: CallbackContext) -> int:
     """Обработка выбора валютной пары"""
     query = update.callback_query
-    if query is None:
-        return ConversationHandler.END
-        
-    await query.answer()
+    query.answer()
     
     user_id = query.from_user.id
     currency = query.data.replace('currency_', '')
     user_data[user_id]['currency'] = currency
     
-    await query.edit_message_text(
+    query.edit_message_text(
         f"✅ Валютная пара: {currency}\n\n"
         "Введите цену входа (например, 1.0660):"
     )
     
     return ENTRY
 
-async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def process_entry(update: Update, context: CallbackContext) -> int:
     """Обработка цены входа"""
-    if update.message is None:
-        return ConversationHandler.END
-        
     user_id = update.message.from_user.id
     
     try:
         entry_price = float(update.message.text)
         user_data[user_id]['entry'] = entry_price
         
-        await update.message.reply_text(
+        update.message.reply_text(
             f"✅ Цена входа: {entry_price}\n\n"
             "Введите цену стоп-лосса:"
         )
@@ -251,21 +236,18 @@ async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return STOP_LOSS
         
     except ValueError:
-        await update.message.reply_text("❌ Пожалуйста, введите корректную цену входа:")
+        update.message.reply_text("❌ Пожалуйста, введите корректную цену входа:")
         return ENTRY
 
-async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def process_stop_loss(update: Update, context: CallbackContext) -> int:
     """Обработка стоп-лосса"""
-    if update.message is None:
-        return ConversationHandler.END
-        
     user_id = update.message.from_user.id
     
     try:
         stop_loss = float(update.message.text)
         user_data[user_id]['stop_loss'] = stop_loss
         
-        await update.message.reply_text(
+        update.message.reply_text(
             f"✅ Стоп-лосс: {stop_loss}\n\n"
             "Введите цены тейк-профитов через запятую (например: 1.0550, 1.0460):"
         )
@@ -273,14 +255,11 @@ async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return TAKE_PROFITS
         
     except ValueError:
-        await update.message.reply_text("❌ Пожалуйста, введите корректную цену стоп-лосса:")
+        update.message.reply_text("❌ Пожалуйста, введите корректную цену стоп-лосса:")
         return STOP_LOSS
 
-async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def process_take_profits(update: Update, context: CallbackContext) -> int:
     """Обработка тейк-профитов"""
-    if update.message is None:
-        return ConversationHandler.END
-        
     user_id = update.message.from_user.id
     
     try:
@@ -289,7 +268,7 @@ async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYP
         user_data[user_id]['take_profits'] = take_profits
         
         # Запрашиваем распределение объемов
-        await update.message.reply_text(
+        update.message.reply_text(
             f"✅ Тейк-профиты: {', '.join(map(str, take_profits))}\n\n"
             f"Введите распределение объемов в % для каждого тейк-профита через запятую "
             f"(всего {len(take_profits)} значений, сумма должна быть 100%):\n"
@@ -299,14 +278,11 @@ async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYP
         return VOLUME_DISTRIBUTION
         
     except ValueError:
-        await update.message.reply_text("❌ Пожалуйста, введите корректные цены тейк-профитов:")
+        update.message.reply_text("❌ Пожалуйста, введите корректные цены тейк-профитов:")
         return TAKE_PROFITS
 
-async def process_volume_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def process_volume_distribution(update: Update, context: CallbackContext) -> int:
     """Обработка распределения объемов и расчет результатов"""
-    if update.message is None:
-        return ConversationHandler.END
-        
     user_id = update.message.from_user.id
     
     try:
@@ -315,7 +291,7 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
         
         # Проверяем сумму распределения
         if sum(distribution) != 100:
-            await update.message.reply_text(
+            update.message.reply_text(
                 f"❌ Сумма распределения должна быть 100%. Ваша сумма: {sum(distribution)}%\n"
                 "Пожалуйста, введите распределение заново:"
             )
@@ -378,7 +354,7 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(response, parse_mode='Markdown', reply_markup=reply_markup)
+        update.message.reply_text(response, parse_mode='Markdown', reply_markup=reply_markup)
         
         # Сохраняем результаты для возможного сохранения пресета
         user_data[user_id]['last_calculation'] = {
@@ -389,21 +365,18 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
         return ConversationHandler.END
         
     except ValueError:
-        await update.message.reply_text("❌ Пожалуйста, введите корректное распределение объемов:")
+        update.message.reply_text("❌ Пожалуйста, введите корректное распределение объемов:")
         return VOLUME_DISTRIBUTION
 
-async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+def save_preset(update: Update, context: CallbackContext) -> None:
     """Сохранение пресета стратегии"""
     query = update.callback_query
-    if query is None:
-        return
-        
-    await query.answer()
+    query.answer()
     
     user_id = query.from_user.id
     
     if user_id not in user_data:
-        await query.edit_message_text("❌ Ошибка: данные не найдены. Начните новый расчет с /start")
+        query.edit_message_text("❌ Ошибка: данные не найдены. Начните новый расчет с /start")
         return
     
     if 'presets' not in user_data[user_id]:
@@ -416,28 +389,25 @@ async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     user_data[user_id]['presets'].append(preset_data)
     
-    await query.edit_message_text(
+    query.edit_message_text(
         "✅ Пресет успешно сохранен!\n\n"
         "Используйте /presets для просмотра сохраненных стратегий.\n"
         "Используйте /start для нового расчета."
     )
 
-async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+def show_presets(update: Update, context: CallbackContext) -> None:
     """Показать сохраненные пресеты"""
-    if update.message is None:
-        return
-        
     user_id = update.message.from_user.id
     
     if user_id not in user_data or 'presets' not in user_data[user_id] or not user_data[user_id]['presets']:
-        await update.message.reply_text("📝 У вас нет сохраненных пресетов.")
+        update.message.reply_text("📝 У вас нет сохраненных пресетов.")
         return
     
     presets = user_data[user_id]['presets']
     
     for i, preset in enumerate(presets[-5:], 1):  # Показываем последние 5 пресетов
         data = preset['data']
-        await update.message.reply_text(
+        update.message.reply_text(
             f"📋 *Пресет #{i}*\n"
             f"Депозит: ${data['deposit']:,.2f}\n"
             f"Плечо: {data['leverage']}\n"
@@ -448,21 +418,15 @@ async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             parse_mode='Markdown'
         )
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def cancel(update: Update, context: CallbackContext) -> int:
     """Отмена разговора"""
-    if update.message is None:
-        return ConversationHandler.END
-        
-    await update.message.reply_text(
+    update.message.reply_text(
         'Расчет отменен. Используйте /start для нового расчета.'
     )
     return ConversationHandler.END
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+def help_command(update: Update, context: CallbackContext) -> None:
     """Справка по боту"""
-    if update.message is None:
-        return
-        
     help_text = """
 🤖 *Risk Management Bot - Помощь*
 
@@ -487,16 +451,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 - Визуализация рисков в % от депозита
 - Сохранение пресетов стратегий
     """
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+    update.message.reply_text(help_text, parse_mode='Markdown')
 
-async def new_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+def new_calculation(update: Update, context: CallbackContext) -> None:
     """Начать новый расчет"""
     query = update.callback_query
-    if query is None:
-        return
-        
-    await query.answer()
-    await start(update, context)
+    query.answer()
+    start(update, context)
+
+def error_handler(update: Update, context: CallbackContext) -> None:
+    """Обработка ошибок"""
+    logger.error(msg="Exception while handling an update:", exc_info=context.error)
 
 def main() -> None:
     """Запуск бота"""
@@ -506,34 +471,41 @@ def main() -> None:
         logging.error("Токен бота не найден! Убедитесь, что переменная TELEGRAM_BOT_TOKEN установлена.")
         return
 
-    # Создаем Application
-    application = Application.builder().token(token).build()
+    # Создаем Updater
+    updater = Updater(token, use_context=True)
+    
+    # Получаем диспетчер для регистрации обработчиков
+    dp = updater.dispatcher
     
     # Настраиваем ConversationHandler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
-            DEPOSIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_deposit)],
+            DEPOSIT: [MessageHandler(Filters.text & ~Filters.command, process_deposit)],
             LEVERAGE: [CallbackQueryHandler(process_leverage, pattern='^leverage_')],
             CURRENCY: [CallbackQueryHandler(process_currency, pattern='^currency_')],
-            ENTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_entry)],
-            STOP_LOSS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_stop_loss)],
-            TAKE_PROFITS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_take_profits)],
-            VOLUME_DISTRIBUTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_volume_distribution)],
+            ENTRY: [MessageHandler(Filters.text & ~Filters.command, process_entry)],
+            STOP_LOSS: [MessageHandler(Filters.text & ~Filters.command, process_stop_loss)],
+            TAKE_PROFITS: [MessageHandler(Filters.text & ~Filters.command, process_take_profits)],
+            VOLUME_DISTRIBUTION: [MessageHandler(Filters.text & ~Filters.command, process_volume_distribution)],
         },
         fallbacks=[CommandHandler('cancel', cancel)]
     )
     
     # Добавляем обработчики
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler('help', help_command))
-    application.add_handler(CommandHandler('presets', show_presets))
-    application.add_handler(CallbackQueryHandler(save_preset, pattern='^save_preset$'))
-    application.add_handler(CallbackQueryHandler(new_calculation, pattern='^new_calculation$'))
+    dp.add_handler(conv_handler)
+    dp.add_handler(CommandHandler('help', help_command))
+    dp.add_handler(CommandHandler('presets', show_presets))
+    dp.add_handler(CallbackQueryHandler(save_preset, pattern='^save_preset$'))
+    dp.add_handler(CallbackQueryHandler(new_calculation, pattern='^new_calculation$'))
+    
+    # Обработчик ошибок
+    dp.add_error_handler(error_handler)
     
     # Запускаем бота
     logger.info("Бот запущен...")
-    application.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == '__main__':
     main()
