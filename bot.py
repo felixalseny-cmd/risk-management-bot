@@ -1,5 +1,7 @@
 import os
 import logging
+import signal
+import asyncio
 from datetime import datetime
 from typing import Dict, List, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -340,42 +342,66 @@ async def new_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         await start(update, context)
 
+# Обработчики для graceful shutdown
+class BotManager:
+    def __init__(self):
+        self.application = None
+        self.is_running = False
+
+    async def start_bot(self):
+        token = os.getenv('TELEGRAM_BOT_TOKEN')
+        if not token:
+            logger.error("Токен бота не найден! Убедитесь, что переменная TELEGRAM_BOT_TOKEN установлена.")
+            return
+
+        token = token.strip()
+        self.application = Application.builder().token(token).build()
+
+        conv_handler = ConversationHandler(
+            entry_points=[CommandHandler('start', start)],
+            states={
+                DEPOSIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_deposit)],
+                LEVERAGE: [CallbackQueryHandler(process_leverage, pattern='^leverage_')],
+                CURRENCY: [CallbackQueryHandler(process_currency, pattern='^currency_')],
+                ENTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_entry)],
+                STOP_LOSS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_stop_loss)],
+                TAKE_PROFITS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_take_profits)],
+                VOLUME_DISTRIBUTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_volume_distribution)],
+            },
+            fallbacks=[CommandHandler('cancel', cancel)]
+        )
+
+        self.application.add_handler(conv_handler)
+        self.application.add_handler(CommandHandler('help', help_command))
+        self.application.add_handler(CommandHandler('presets', show_presets))
+        self.application.add_handler(CallbackQueryHandler(save_preset, pattern='^save_preset$'))
+        self.application.add_handler(CallbackQueryHandler(new_calculation, pattern='^new_calculation$'))
+
+        logger.info("Бот запущен...")
+        self.is_running = True
+        await self.application.run_polling()
+
+    async def stop_bot(self):
+        if self.application and self.is_running:
+            logger.info("Остановка бота...")
+            await self.application.stop()
+            await self.application.shutdown()
+            self.is_running = False
+            logger.info("Бот остановлен")
+
+bot_manager = BotManager()
+
+def signal_handler(signum, frame):
+    logger.info(f"Получен сигнал {signum}, остановка бота...")
+    asyncio.create_task(bot_manager.stop_bot())
 
 # --- Запуск ---
-def main():
-    token = os.getenv('TELEGRAM_BOT_TOKEN')
-    if not token:
-        logger.error("Токен бота не найден! Убедитесь, что переменная TELEGRAM_BOT_TOKEN установлена.")
-        return
-
-    # Убираем возможные пробелы
-    token = token.strip()
-
-    app = Application.builder().token(token).build()
-
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-        states={
-            DEPOSIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_deposit)],
-            LEVERAGE: [CallbackQueryHandler(process_leverage, pattern='^leverage_')],
-            CURRENCY: [CallbackQueryHandler(process_currency, pattern='^currency_')],
-            ENTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_entry)],
-            STOP_LOSS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_stop_loss)],
-            TAKE_PROFITS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_take_profits)],
-            VOLUME_DISTRIBUTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_volume_distribution)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
-
-    app.add_handler(conv_handler)
-    app.add_handler(CommandHandler('help', help_command))
-    app.add_handler(CommandHandler('presets', show_presets))
-    app.add_handler(CallbackQueryHandler(save_preset, pattern='^save_preset$'))
-    app.add_handler(CallbackQueryHandler(new_calculation, pattern='^new_calculation$'))
-
-    logger.info("Бот запущен...")
-    app.run_polling()
-
+async def main():
+    # Регистрируем обработчики сигналов
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    await bot_manager.start_bot()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
