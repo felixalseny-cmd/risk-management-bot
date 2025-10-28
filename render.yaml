@@ -9,4 +9,5 @@ services:
       - key: TELEGRAM_BOT_TOKEN
         value: 7993604333:AAEA-QABJ5wkSgXkiwZJhqqSbuKdqSF4DDw
       - key: WEBHOOK_URL
+
         value: https://risk-management-bot.onrender.com 
