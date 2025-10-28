@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: risk-management-bot-en
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot_en.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN_EN
+        value: 7835480792:AAFo7VckIQHLph1grNxknhAXH1_HWph-Q1o
+      - key: RENDER_EXTERNAL_URL_EN
+        value: https://fxwave-risk-bot.onrender.com
