@@ -2,7 +2,7 @@ import os
 import logging
 import json
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Any
 from telegram import (
     Update, 
     InlineKeyboardButton, 
@@ -23,12 +23,13 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
 # Состояния разговора
 DEPOSIT, LEVERAGE, CURRENCY, ENTRY, STOP_LOSS, TAKE_PROFITS, VOLUME_DISTRIBUTION = range(7)
 
 # Данные пользователей
-user_data = {}
+user_data: Dict[int, Dict[str, Any]] = {}
 
 # PIP значения для разных валютных пар
 PIP_VALUES = {
@@ -55,7 +56,7 @@ class RiskCalculator:
         entry_price: float,
         stop_loss: float,
         risk_percent: float = 0.02
-    ) -> Dict:
+    ) -> Dict[str, float]:
         """Расчет размера позиции с учетом риска"""
         # Парсим плечо
         lev_value = int(leverage.split(':')[1])
@@ -68,7 +69,7 @@ class RiskCalculator:
         
         # Максимальный лот по риску
         pip_value_per_lot = RiskCalculator.calculate_pip_value(currency_pair, 1.0)
-        max_lots_by_risk = risk_amount / (stop_pips * pip_value_per_lot)
+        max_lots_by_risk = risk_amount / (stop_pips * pip_value_per_lot) if stop_pips > 0 else 0
         
         # Максимальный лот по марже
         contract_size = 100000  # Стандартный контракт
@@ -93,7 +94,7 @@ class RiskCalculator:
             'required_margin': required_margin,
             'risk_percent': (risk_amount / deposit) * 100,
             'max_risk_lots': max_lots_by_risk,
-            'max_margin_lots': max_lots_by_margin
+            'max_margin_lots': max_largin_lots
         }
 
     @staticmethod
@@ -103,7 +104,7 @@ class RiskCalculator:
         take_profits: List[float],
         position_size: float,
         volume_distribution: List[float]
-    ) -> List[Dict]:
+    ) -> List[Dict[str, Any]]:
         """Расчет прибыли для каждого тейк-профита"""
         profits = []
         total_profit = 0
@@ -145,7 +146,7 @@ async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = update.message.from_user.id
     
     try:
-        deposit = float(update.message.text)
+        deposit = float(update.message.text.replace(',', ''))
         if deposit <= 0:
             await update.message.reply_text("❌ Депозит должен быть положительным числом. Попробуйте еще раз:")
             return DEPOSIT
@@ -366,7 +367,7 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text("❌ Пожалуйста, введите корректное распределение объемов:")
         return VOLUME_DISTRIBUTION
 
-async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Сохранение пресета стратегии"""
     query = update.callback_query
     await query.answer()
@@ -389,7 +390,7 @@ async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Используйте /start для нового расчета."
     )
 
-async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показать сохраненные пресеты"""
     user_id = update.message.from_user.id
     
@@ -419,7 +420,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     return ConversationHandler.END
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Справка по боту"""
     help_text = """
 🤖 *Risk Management Bot - Помощь*
@@ -447,7 +448,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
-def main():
+def main() -> None:
     """Запуск бота"""
     # Получаем токен из переменных окружения
     token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -481,7 +482,7 @@ def main():
     application.add_handler(CallbackQueryHandler(start, pattern='^new_calculation$'))
     
     # Запускаем бота
-    print("Бот запущен...")
+    logger.info("Бот запущен...")
     application.run_polling()
 
 if __name__ == '__main__':
