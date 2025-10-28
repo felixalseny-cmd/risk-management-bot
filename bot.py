@@ -1,16 +1,16 @@
 import os
 import logging
-import signal
-import asyncio
+import threading
 from datetime import datetime
 from typing import Dict, List, Any
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application,
+    Updater,
     CommandHandler,
-    ContextTypes,
+    CallbackContext,
     MessageHandler,
-    filters,
+    Filters,
     ConversationHandler,
     CallbackQueryHandler
 )
@@ -101,12 +101,10 @@ class RiskCalculator:
 
 
 # --- Обработчики ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.message:
-        return ConversationHandler.END
+def start(update: Update, context: CallbackContext) -> int:
     user_id = update.message.from_user.id
     user_data[user_id] = {}
-    await update.message.reply_text(
+    update.message.reply_text(
         "🎯 *Risk Management Calculator Bot*\n\n"
         "Я помогу рассчитать оптимальный объем позиции с учетом рисков.\n\n"
         "Давайте начнем! Введите сумму депозита в USD:",
@@ -114,9 +112,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     return DEPOSIT
 
-async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.message:
-        return ConversationHandler.END
+def process_deposit(update: Update, context: CallbackContext) -> int:
     user_id = update.message.from_user.id
     try:
         deposit = float(update.message.text.replace(',', '').replace(' ', ''))
@@ -124,20 +120,18 @@ async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             raise ValueError
         user_data[user_id]['deposit'] = deposit
         keyboard = [[InlineKeyboardButton(l, callback_data=f"leverage_{l}")] for l in LEVERAGES]
-        await update.message.reply_text(
+        update.message.reply_text(
             f"✅ Депозит: ${deposit:,.2f}\n\nВыберите кредитное плечо:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return LEVERAGE
     except ValueError:
-        await update.message.reply_text("❌ Пожалуйста, введите корректную сумму депозита:")
+        update.message.reply_text("❌ Пожалуйста, введите корректную сумму депозита:")
         return DEPOSIT
 
-async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def process_leverage(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    if not query:
-        return ConversationHandler.END
-    await query.answer()
+    query.answer()
     user_id = query.from_user.id
     leverage = query.data.replace('leverage_', '')
     user_data[user_id]['leverage'] = leverage
@@ -151,60 +145,52 @@ async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 row.append(InlineKeyboardButton(pairs[i + j], callback_data=f"currency_{pairs[i + j]}"))
         keyboard.append(row)
     
-    await query.edit_message_text(
+    query.edit_message_text(
         f"✅ Плечо: {leverage}\n\nВыберите валютную пару:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return CURRENCY
 
-async def process_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def process_currency(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    if not query:
-        return ConversationHandler.END
-    await query.answer()
+    query.answer()
     user_id = query.from_user.id
     currency = query.data.replace('currency_', '')
     user_data[user_id]['currency'] = currency
-    await query.edit_message_text(f"✅ Валютная пара: {currency}\n\nВведите цену входа (например, 1.0660):")
+    query.edit_message_text(f"✅ Валютная пара: {currency}\n\nВведите цену входа (например, 1.0660):")
     return ENTRY
 
-async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.message:
-        return ConversationHandler.END
+def process_entry(update: Update, context: CallbackContext) -> int:
     user_id = update.message.from_user.id
     try:
         entry = float(update.message.text)
         user_data[user_id]['entry'] = entry
-        await update.message.reply_text(f"✅ Цена входа: {entry}\n\nВведите цену стоп-лосса:")
+        update.message.reply_text(f"✅ Цена входа: {entry}\n\nВведите цену стоп-лосса:")
         return STOP_LOSS
     except ValueError:
-        await update.message.reply_text("❌ Пожалуйста, введите корректную цену входа:")
+        update.message.reply_text("❌ Пожалуйста, введите корректную цену входа:")
         return ENTRY
 
-async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.message:
-        return ConversationHandler.END
+def process_stop_loss(update: Update, context: CallbackContext) -> int:
     user_id = update.message.from_user.id
     try:
         sl = float(update.message.text)
         user_data[user_id]['stop_loss'] = sl
-        await update.message.reply_text(
+        update.message.reply_text(
             f"✅ Стоп-лосс: {sl}\n\n"
             "Введите цены тейк-профитов через запятую (например: 1.0550, 1.0460):"
         )
         return TAKE_PROFITS
     except ValueError:
-        await update.message.reply_text("❌ Пожалуйста, введите корректную цену стоп-лосса:")
+        update.message.reply_text("❌ Пожалуйста, введите корректную цену стоп-лосса:")
         return STOP_LOSS
 
-async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.message:
-        return ConversationHandler.END
+def process_take_profits(update: Update, context: CallbackContext) -> int:
     user_id = update.message.from_user.id
     try:
         tps = [float(x.strip()) for x in update.message.text.split(',')]
         user_data[user_id]['take_profits'] = tps
-        await update.message.reply_text(
+        update.message.reply_text(
             f"✅ Тейк-профиты: {', '.join(map(str, tps))}\n\n"
             f"Введите распределение объемов в % для каждого тейк-профита через запятую "
             f"(всего {len(tps)} значений, сумма должна быть 100%):\n"
@@ -212,17 +198,15 @@ async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return VOLUME_DISTRIBUTION
     except ValueError:
-        await update.message.reply_text("❌ Пожалуйста, введите корректные цены тейк-профитов:")
+        update.message.reply_text("❌ Пожалуйста, введите корректные цены тейк-профитов:")
         return TAKE_PROFITS
 
-async def process_volume_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.message:
-        return ConversationHandler.END
+def process_volume_distribution(update: Update, context: CallbackContext) -> int:
     user_id = update.message.from_user.id
     try:
         dist = [float(x.strip()) for x in update.message.text.split(',')]
         if abs(sum(dist) - 100) > 1e-5:
-            await update.message.reply_text(
+            update.message.reply_text(
                 f"❌ Сумма распределения должна быть 100%. Ваша сумма: {sum(dist)}%\n"
                 "Пожалуйста, введите распределение заново:"
             )
@@ -272,20 +256,18 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
             [InlineKeyboardButton("💾 Сохранить пресет", callback_data="save_preset")],
             [InlineKeyboardButton("🔄 Новый расчет", callback_data="new_calculation")]
         ]
-        await update.message.reply_text(resp, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+        update.message.reply_text(resp, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
         return ConversationHandler.END
     except ValueError:
-        await update.message.reply_text("❌ Пожалуйста, введите корректное распределение объемов:")
+        update.message.reply_text("❌ Пожалуйста, введите корректное распределение объемов:")
         return VOLUME_DISTRIBUTION
 
-async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def save_preset(update: Update, context: CallbackContext):
     query = update.callback_query
-    if not query:
-        return
-    await query.answer()
+    query.answer()
     uid = query.from_user.id
     if uid not in user_data:
-        await query.edit_message_text("❌ Ошибка: данные не найдены. Начните новый расчет с /start")
+        query.edit_message_text("❌ Ошибка: данные не найдены. Начните новый расчет с /start")
         return
     if 'presets' not in user_data[uid]:
         user_data[uid]['presets'] = []
@@ -293,23 +275,21 @@ async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'timestamp': datetime.now().isoformat(),
         'data': user_data[uid].copy()
     })
-    await query.edit_message_text(
+    query.edit_message_text(
         "✅ Пресет успешно сохранен!\n\n"
         "Используйте /presets для просмотра сохраненных стратегий.\n"
         "Используйте /start для нового расчета."
     )
 
-async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
+def show_presets(update: Update, context: CallbackContext):
     uid = update.message.from_user.id
     presets = user_data.get(uid, {}).get('presets', [])
     if not presets:
-        await update.message.reply_text("📝 У вас нет сохраненных пресетов.")
+        update.message.reply_text("📝 У вас нет сохраненных пресетов.")
         return
     for i, p in enumerate(presets[-5:], 1):
         d = p['data']
-        await update.message.reply_text(
+        update.message.reply_text(
             f"📋 *Пресет #{i}*\n"
             f"Депозит: ${d['deposit']:,.2f}\n"
             f"Плечо: {d['leverage']}\n"
@@ -320,88 +300,91 @@ async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if update.message:
-        await update.message.reply_text("Расчет отменен. Используйте /start для нового расчета.")
+def cancel(update: Update, context: CallbackContext) -> int:
+    update.message.reply_text("Расчет отменен. Используйте /start для нового расчета.")
     return ConversationHandler.END
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message:
-        await update.message.reply_text(
-            "🤖 *Risk Management Bot - Помощь*\n\n"
-            "*Доступные команды:*\n"
-            "/start - Начать новый расчет\n"
-            "/presets - Показать сохраненные пресеты\n"
-            "/help - Показать эту справку",
-            parse_mode='Markdown'
-        )
+def help_command(update: Update, context: CallbackContext):
+    update.message.reply_text(
+        "🤖 *Risk Management Bot - Помощь*\n\n"
+        "*Доступные команды:*\n"
+        "/start - Начать новый расчет\n"
+        "/presets - Показать сохраненные пресеты\n"
+        "/help - Показать эту справку",
+        parse_mode='Markdown'
+    )
 
-async def new_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def new_calculation(update: Update, context: CallbackContext):
     query = update.callback_query
-    if query:
-        await query.answer()
-        await start(update, context)
+    query.answer()
+    start(update, context)
 
-# Обработчики для graceful shutdown
-class BotManager:
-    def __init__(self):
-        self.application = None
-        self.is_running = False
+def error_handler(update: Update, context: CallbackContext):
+    logger.error(msg="Exception while handling an update:", exc_info=context.error)
 
-    async def start_bot(self):
-        token = os.getenv('TELEGRAM_BOT_TOKEN')
-        if not token:
-            logger.error("Токен бота не найден! Убедитесь, что переменная TELEGRAM_BOT_TOKEN установлена.")
-            return
+def setup_bot():
+    """Настройка и запуск бота"""
+    token = os.getenv('TELEGRAM_BOT_TOKEN')
+    if not token:
+        logger.error("Токен бота не найден!")
+        return None
 
-        token = token.strip()
-        self.application = Application.builder().token(token).build()
+    token = token.strip()
+    updater = Updater(token, use_context=True)
+    dp = updater.dispatcher
 
-        conv_handler = ConversationHandler(
-            entry_points=[CommandHandler('start', start)],
-            states={
-                DEPOSIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_deposit)],
-                LEVERAGE: [CallbackQueryHandler(process_leverage, pattern='^leverage_')],
-                CURRENCY: [CallbackQueryHandler(process_currency, pattern='^currency_')],
-                ENTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_entry)],
-                STOP_LOSS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_stop_loss)],
-                TAKE_PROFITS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_take_profits)],
-                VOLUME_DISTRIBUTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_volume_distribution)],
-            },
-            fallbacks=[CommandHandler('cancel', cancel)]
-        )
+    # Настраиваем ConversationHandler
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', start)],
+        states={
+            DEPOSIT: [MessageHandler(Filters.text & ~Filters.command, process_deposit)],
+            LEVERAGE: [CallbackQueryHandler(process_leverage, pattern='^leverage_')],
+            CURRENCY: [CallbackQueryHandler(process_currency, pattern='^currency_')],
+            ENTRY: [MessageHandler(Filters.text & ~Filters.command, process_entry)],
+            STOP_LOSS: [MessageHandler(Filters.text & ~Filters.command, process_stop_loss)],
+            TAKE_PROFITS: [MessageHandler(Filters.text & ~Filters.command, process_take_profits)],
+            VOLUME_DISTRIBUTION: [MessageHandler(Filters.text & ~Filters.command, process_volume_distribution)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)]
+    )
 
-        self.application.add_handler(conv_handler)
-        self.application.add_handler(CommandHandler('help', help_command))
-        self.application.add_handler(CommandHandler('presets', show_presets))
-        self.application.add_handler(CallbackQueryHandler(save_preset, pattern='^save_preset$'))
-        self.application.add_handler(CallbackQueryHandler(new_calculation, pattern='^new_calculation$'))
+    dp.add_handler(conv_handler)
+    dp.add_handler(CommandHandler('help', help_command))
+    dp.add_handler(CommandHandler('presets', show_presets))
+    dp.add_handler(CallbackQueryHandler(save_preset, pattern='^save_preset$'))
+    dp.add_handler(CallbackQueryHandler(new_calculation, pattern='^new_calculation$'))
+    dp.add_error_handler(error_handler)
 
+    return updater
+
+def run_bot():
+    """Запуск бота в отдельном потоке"""
+    updater = setup_bot()
+    if updater:
         logger.info("Бот запущен...")
-        self.is_running = True
-        await self.application.run_polling()
+        updater.start_polling()
+        updater.idle()
 
-    async def stop_bot(self):
-        if self.application and self.is_running:
-            logger.info("Остановка бота...")
-            await self.application.stop()
-            await self.application.shutdown()
-            self.is_running = False
-            logger.info("Бот остановлен")
+# Flask приложение для удовлетворения требований Render
+app = Flask(__name__)
 
-bot_manager = BotManager()
+@app.route('/')
+def home():
+    return "🤖 Risk Management Bot is running!"
 
-def signal_handler(signum, frame):
-    logger.info(f"Получен сигнал {signum}, остановка бота...")
-    asyncio.create_task(bot_manager.stop_bot())
+@app.route('/health')
+def health():
+    return "OK"
 
-# --- Запуск ---
-async def main():
-    # Регистрируем обработчики сигналов
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
-    
-    await bot_manager.start_bot()
+def run_flask():
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    # Запускаем бота в отдельном потоке
+    bot_thread = threading.Thread(target=run_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
+    
+    # Запускаем Flask сервер в основном потоке
+    run_flask()
