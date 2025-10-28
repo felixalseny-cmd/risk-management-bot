@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from datetime import datetime
 from typing import Dict, List, Any
 from flask import Flask, request
@@ -356,12 +357,17 @@ def health():
     return "OK"
 
 @app.route('/webhook', methods=['POST'])
-async def webhook():
-    """Эндпоинт для вебхуков от Telegram"""
+def webhook():
+    """Синхронный обработчик вебхука"""
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('UTF-8')
         update = Update.de_json(json_string, application.bot)
-        await application.process_update(update)
+        
+        # Запускаем обработку обновления в event loop
+        asyncio.run_coroutine_threadsafe(
+            application.process_update(update),
+            application._loop
+        )
         return 'OK'
     return 'Bad Request', 400
 
@@ -403,7 +409,7 @@ def setup_bot():
 async def set_webhook():
     """Установка вебхука"""
     token = os.getenv('TELEGRAM_BOT_TOKEN')
-    webhook_url = os.getenv('RENDER_EXTERNAL_URL') + '/webhook'
+    webhook_url = os.getenv('RENDER_EXTERNAL_URL', '') + '/webhook'
     
     if not token or not webhook_url:
         logger.error("Не хватает переменных окружения!")
@@ -411,19 +417,23 @@ async def set_webhook():
     
     application = setup_bot()
     if application:
-        await application.bot.set_webhook(webhook_url)
+        # Инициализируем приложение
+        await application.initialize()
+        await application.start()
+        await application.updater.start_webhook(
+            listen="0.0.0.0",
+            port=int(os.environ.get('PORT', 10000)),
+            url_path="/webhook",
+            webhook_url=webhook_url
+        )
         logger.info(f"Webhook установлен: {webhook_url}")
 
 def main():
     """Главная функция"""
-    import asyncio
-    
-    # Устанавливаем вебхук
+    # Запускаем бота с вебхуком
     asyncio.run(set_webhook())
     
-    # Запускаем Flask
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    # Flask не запускаем отдельно, так как PTB уже запускает веб-сервер
 
 if __name__ == '__main__':
     main()
