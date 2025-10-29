@@ -660,19 +660,12 @@ async def process_risk_percent(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     return DEPOSIT
 
-# Остальные обработчики (process_deposit, process_leverage, process_entry, process_stop_loss, 
-# process_take_profits, process_volume_distribution) остаются аналогичными предыдущей версии,
-# но с добавлением кнопок "Назад" и учетом направления сделки
-
 async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка ввода депозита"""
     if not update.message:
         return DEPOSIT
         
     user_id = update.message.from_user.id
-    
-    if update.message.text == "🔙 Назад":
-        return await process_risk_percent_back(update, context)
     
     try:
         deposit = float(update.message.text.replace(',', '').replace(' ', ''))
@@ -741,7 +734,97 @@ async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
     return ENTRY
 
-# Аналогично обновляем остальные обработчики с кнопками "Назад"
+async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка ввода цены входа"""
+    if not update.message:
+        return ENTRY
+        
+    user_id = update.message.from_user.id
+    
+    try:
+        entry = float(update.message.text)
+        if entry <= 0:
+            await update.message.reply_text("❌ Цена должна быть положительной:")
+            return ENTRY
+            
+        user_data[user_id]['entry'] = entry
+        
+        currency = user_data[user_id].get('currency', 'EURUSD')
+        direction = user_data[user_id].get('direction', 'BUY')
+        
+        await update.message.reply_text(
+            f"✅ *Цена входа:* {entry}\n"
+            f"✅ *Направление:* {direction}\n\n"
+            f"🛑 *Введите цену стоп-лосса для {currency}:*",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_entry")]])
+        )
+        return STOP_LOSS
+        
+    except ValueError:
+        await update.message.reply_text("❌ Пожалуйста, введите корректную цену входа:")
+        return ENTRY
+
+async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка ввода стоп-лосса"""
+    if not update.message:
+        return STOP_LOSS
+        
+    user_id = update.message.from_user.id
+    
+    try:
+        sl = float(update.message.text)
+        entry = user_data[user_id].get('entry', 0)
+        
+        if sl <= 0:
+            await update.message.reply_text("❌ Цена должна быть положительной:")
+            return STOP_LOSS
+            
+        user_data[user_id]['stop_loss'] = sl
+        
+        currency = user_data[user_id].get('currency', 'EURUSD')
+        
+        await update.message.reply_text(
+            f"✅ *Стоп-лосс:* {sl}\n\n"
+            f"🎯 *Введите цены тейк-профитов для {currency} через запятую* (например: 1.0550, 1.0460):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_stop_loss")]])
+        )
+        return TAKE_PROFITS
+        
+    except ValueError:
+        await update.message.reply_text("❌ Пожалуйста, введите корректную цену стоп-лосса:")
+        return STOP_LOSS
+
+async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка ввода тейк-профитов"""
+    if not update.message:
+        return TAKE_PROFITS
+        
+    user_id = update.message.from_user.id
+    
+    try:
+        tps = [float(x.strip()) for x in update.message.text.split(',')]
+        
+        if len(tps) > 5:
+            await update.message.reply_text("❌ Максимум 5 тейк-профитов:")
+            return TAKE_PROFITS
+            
+        user_data[user_id]['take_profits'] = tps
+        
+        await update.message.reply_text(
+            f"✅ *Тейк-профиты:* {', '.join(map(str, tps))}\n\n"
+            f"📊 *Введите распределение объемов в % для каждого тейк-профита через запятую*\n"
+            f"(всего {len(tps)} значений, сумма должна быть 100%):\n"
+            f"*Пример:* 50, 30, 20",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_take_profits")]])
+        )
+        return VOLUME_DISTRIBUTION
+        
+    except ValueError:
+        await update.message.reply_text("❌ Пожалуйста, введите корректные цены тейк-профитов:")
+        return TAKE_PROFITS
 
 async def process_volume_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка распределения объемов и вывод результатов"""
@@ -749,9 +832,6 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
         return VOLUME_DISTRIBUTION
         
     user_id = update.message.from_user.id
-    
-    if update.message.text == "🔙 Назад":
-        return await process_take_profits_back(update, context)
     
     try:
         dist = [float(x.strip()) for x in update.message.text.split(',')]
@@ -935,9 +1015,149 @@ async def process_risk_percent_back(update: Update, context: ContextTypes.DEFAUL
         )
     return RISK_PERCENT
 
-# Аналогичные обработчики для других кнопок "Назад"...
+# Обработчики для быстрого расчета
+async def process_quick_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка быстрого расчета"""
+    if not update.message:
+        return CUSTOM_INSTRUMENT
+        
+    user_id = update.message.from_user.id
+    currency = update.message.text.upper().strip()
+    
+    # Базовая валидация тикера
+    if not re.match(r'^[A-Z0-9]{2,10}$', currency):
+        await update.message.reply_text(
+            "❌ *Неверный формат тикера!*\n\n"
+            "Пожалуйста, введите корректный тикер (только буквы и цифры, 2-10 символов):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+        )
+        return CUSTOM_INSTRUMENT
+    
+    user_data[user_id] = {
+        'currency': currency,
+        'direction': 'BUY',
+        'risk_percent': 0.02,
+        'leverage': '1:100',
+        'take_profits': [],
+        'volume_distribution': [100]
+    }
+    
+    # Определяем тип инструмента
+    if any(x in currency for x in ['BTC', 'ETH', 'XRP', 'ADA']):
+        user_data[user_id]['instrument_type'] = 'crypto'
+    elif any(x in currency for x in ['XAU', 'XAG', 'XPT', 'XPD']):
+        user_data[user_id]['instrument_type'] = 'metals'
+    elif currency.isalpha() and len(currency) == 6:
+        user_data[user_id]['instrument_type'] = 'forex'
+    else:
+        user_data[user_id]['instrument_type'] = 'indices'
+    
+    await update.message.reply_text(
+        f"✅ *Инструмент:* {currency}\n\n"
+        "💵 *Введите сумму депозита в USD:*",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+    )
+    return DEPOSIT
 
-# Остальные функции (save_preset, show_presets, cancel, new_calculation) остаются аналогичными
+# Дополнительные обработчики
+async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохранение пресета"""
+    query = update.callback_query
+    if not query:
+        return
+        
+    await query.answer()
+    uid = query.from_user.id
+    
+    if uid not in user_data:
+        await query.edit_message_text("❌ Ошибка: данные не найдены. Начните новый расчет с /start")
+        return
+        
+    if 'presets' not in user_data[uid]:
+        user_data[uid]['presets'] = []
+    
+    # Ограничиваем количество сохраненных пресетов
+    if len(user_data[uid]['presets']) >= 20:
+        user_data[uid]['presets'] = user_data[uid]['presets'][-19:]
+    
+    user_data[uid]['presets'].append({
+        'timestamp': datetime.now().isoformat(),
+        'data': user_data[uid].copy()
+    })
+    
+    await query.edit_message_text(
+        "✅ *PRO Стратегия успешно сохранена!*\n\n"
+        "💾 Используйте /presets для просмотра сохраненных стратегий\n"
+        "🚀 Используйте /start для нового PRO расчета\n\n"
+        "👨‍💻 *PRO Разработчик:* [@fxfeelgood](https://t.me/fxfeelgood)",
+        parse_mode='Markdown',
+        disable_web_page_preview=True
+    )
+
+async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать сохраненные пресеты"""
+    if not update.message:
+        return
+        
+    uid = update.message.from_user.id
+    presets = user_data.get(uid, {}).get('presets', [])
+    
+    if not presets:
+        await update.message.reply_text(
+            "📝 *У вас нет сохраненных PRO стратегий.*\n\n"
+            "💡 Сохраняйте свои стратегии после расчета для быстрого доступа!",
+            parse_mode='Markdown'
+        )
+        return
+    
+    await update.message.reply_text(
+        f"📚 *Ваши PRO стратегии ({len(presets)}):*",
+        parse_mode='Markdown'
+    )
+    
+    for i, p in enumerate(presets[-10:], 1):
+        d = p['data']
+        instrument_display = INSTRUMENT_TYPES.get(d.get('instrument_type', 'forex'), 'Forex')
+        
+        preset_text = f"""
+📋 *PRO Стратегия #{i}*
+💼 Тип: {instrument_display}
+🌐 Инструмент: {d.get('currency', 'N/A')}
+💵 Депозит: ${d.get('deposit', 0):,.2f}
+⚖️ Плечо: {d.get('leverage', 'N/A')}
+📈 Вход: {d.get('entry', 'N/A')}
+🛑 SL: {d.get('stop_loss', 'N/A')}
+🎯 TP: {', '.join(map(str, d.get('take_profits', [])))}
+
+👨‍💻 *PRO Разработчик:* [@fxfeelgood](https://t.me/fxfeelgood)
+"""
+        await update.message.reply_text(
+            preset_text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True
+        )
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отмена диалога"""
+    if update.message:
+        await update.message.reply_text(
+            "❌ *PRO Расчет отменен.*\n\n"
+            "🚀 Используйте /start для нового PRO расчета\n"
+            "📚 Используйте /info для PRO инструкции\n\n"
+            "👨‍💻 *PRO Разработчик:* [@fxfeelgood](https://t.me/fxfeelgood)",
+            parse_mode='Markdown',
+            disable_web_page_preview=True
+        )
+    return ConversationHandler.END
+
+async def new_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Новый расчет"""
+    query = update.callback_query
+    if query:
+        await query.answer()
+        await start(update, context)
 
 def main():
     """Основная функция для запуска бота"""
