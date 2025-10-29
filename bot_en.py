@@ -870,10 +870,6 @@ def main():
         Application.builder()
         .token(token)
         .concurrent_updates(True)
-        .pool_timeout(30)
-        .connect_timeout(30)
-        .read_timeout(30)
-        .write_timeout(30)
         .build()
     )
 
@@ -919,7 +915,7 @@ def main():
     logger.info(f"🌐 PRO Starting webhook on port {port}")
     logger.info(f"🔗 PRO Webhook URL: {webhook_url}/webhook")
     
-        try:
+    try:
         application.run_webhook(
             listen="0.0.0.0",
             port=port,
@@ -932,5 +928,4 @@ def main():
         application.run_polling()
 
 if __name__ == '__main__':
-
     main()
