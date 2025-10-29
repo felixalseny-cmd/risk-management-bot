@@ -917,29 +917,18 @@ def main():
     logger.info(f"🌐 PRO Запуск вебхука на порту {port}")
     logger.info(f"🔗 PRO Webhook URL: {webhook_url}/webhook")
     
-    try:
+        try:
         application.run_webhook(
             listen="0.0.0.0",
             port=port,
             url_path="/webhook",
-            webhook_url=webhook_url + "/webhook",
-            max_connections=40,
-            pool_timeout=30,
-            connect_timeout=30,
-            read_timeout=30,
-            write_timeout=30
+            webhook_url=webhook_url + "/webhook"
         )
     except Exception as e:
         logger.error(f"❌ Ошибка при запуске PRO вебхука: {e}")
         logger.info("🔄 PRO Попытка запуска с polling...")
-        application.run_polling(
-            poll_interval=1.0,
-            timeout=30,
-            read_timeout=30,
-            write_timeout=30,
-            connect_timeout=30,
-            pool_timeout=30
-        )
+        application.run_polling()
 
 if __name__ == '__main__':
     main()
+
