@@ -1,13 +1,20 @@
 services:
   - type: web
-    name: risk-management-bot-en
+    name: risk-management-bot-en-pro
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      pip install -r requirements.txt
+      echo "✅ PRO Dependencies installed successfully"
     startCommand: python bot_en.py
     envVars:
       - key: TELEGRAM_BOT_TOKEN_EN
         value: 7835480792:AAFo7VckIQHLph1grNxknhAXH1_HWph-Q1o
       - key: RENDER_EXTERNAL_URL_EN
-
-        value: https://risk-management-bot-en.onrender.com
+        value: https://risk-management-bot-en-pro.onrender.com
+    healthCheckPath: /
+    autoDeploy: true
+    disk:
+      name: cache
+      mountPath: /opt/render/project/src/cache
+      sizeGB: 1
