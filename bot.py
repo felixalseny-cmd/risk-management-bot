@@ -2,6 +2,8 @@ import os
 import logging
 import asyncio
 import re
+import time
+import functools
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -31,6 +33,31 @@ logger = logging.getLogger(__name__)
 
 # Временное хранилище
 user_data: Dict[int, Dict[str, Any]] = {}
+
+# Менеджер кэширования для ускорения расчетов
+class CacheManager:
+    def __init__(self, max_size=1000, ttl=300):
+        self.cache = {}
+        self.max_size = max_size
+        self.ttl = ttl
+    
+    def get(self, key):
+        if key in self.cache:
+            data, timestamp = self.cache[key]
+            if time.time() - timestamp < self.ttl:
+                return data
+            else:
+                del self.cache[key]
+        return None
+    
+    def set(self, key, value):
+        if len(self.cache) >= self.max_size:
+            oldest_key = next(iter(self.cache))
+            del self.cache[oldest_key]
+        self.cache[key] = (value, time.time())
+
+# Глобальный кэш
+calculation_cache = CacheManager()
 
 # Расширенные константы
 INSTRUMENT_TYPES = {
@@ -84,13 +111,14 @@ LEVERAGES = ['1:10', '1:20', '1:50', '1:100', '1:200', '1:500', '1:1000']
 RISK_LEVELS = ['2%', '5%', '10%', '15%', '20%', '25%']
 TRADE_DIRECTIONS = ['BUY', 'SELL']
 
-# Класс для расширенного анализа рисков
-class AdvancedRiskCalculator:
-    """Расширенный калькулятор рисков с поддержкой всех типов инструментов"""
+# Оптимизированный калькулятор рисков с кэшированием
+class OptimizedRiskCalculator:
+    """Оптимизированный калькулятор рисков с поддержкой всех типов инструментов"""
     
     @staticmethod
-    def calculate_pip_value(instrument_type: str, currency_pair: str, lot_size: float) -> float:
-        """Рассчитать стоимость пипса с учетом типа инструмента"""
+    @functools.lru_cache(maxsize=500)
+    def calculate_pip_value_cached(instrument_type: str, currency_pair: str, lot_size: float) -> float:
+        """Кэшированная версия расчета стоимости пипса"""
         base_pip_value = PIP_VALUES.get(currency_pair, 10)
         
         if instrument_type == 'crypto':
@@ -111,12 +139,18 @@ class AdvancedRiskCalculator:
         direction: str,
         risk_percent: float = 0.02
     ) -> Dict[str, float]:
-        """Расширенный расчет размера позиции с учетом направления"""
+        """Оптимизированная версия расчета размера позиции"""
         try:
+            # Создаем ключ для кэша
+            cache_key = f"pos_{deposit}_{leverage}_{instrument_type}_{currency_pair}_{entry_price}_{stop_loss}_{direction}_{risk_percent}"
+            cached_result = calculation_cache.get(cache_key)
+            if cached_result:
+                return cached_result
+            
             lev_value = int(leverage.split(':')[1])
             risk_amount = deposit * risk_percent
             
-            # Разные расчеты для разных типов инструментов
+            # Оптимизированные расчеты стоп-лосса
             if instrument_type == 'forex':
                 stop_pips = abs(entry_price - stop_loss) * 10000
             elif instrument_type == 'crypto':
@@ -126,14 +160,20 @@ class AdvancedRiskCalculator:
             else:
                 stop_pips = abs(entry_price - stop_loss) * 10000
 
-            pip_value_per_lot = AdvancedRiskCalculator.calculate_pip_value(
+            pip_value_per_lot = OptimizedRiskCalculator.calculate_pip_value_cached(
                 instrument_type, currency_pair, 1.0
             )
             
-            max_lots_by_risk = risk_amount / (stop_pips * pip_value_per_lot) if stop_pips > 0 else 0
+            if stop_pips > 0 and pip_value_per_lot > 0:
+                max_lots_by_risk = risk_amount / (stop_pips * pip_value_per_lot)
+            else:
+                max_lots_by_risk = 0
             
             contract_size = CONTRACT_SIZES.get(instrument_type, 100000)
-            max_lots_by_margin = (deposit * lev_value) / (contract_size * entry_price)
+            if entry_price > 0:
+                max_lots_by_margin = (deposit * lev_value) / (contract_size * entry_price)
+            else:
+                max_lots_by_margin = 0
             
             position_size = min(max_lots_by_risk, max_lots_by_margin, 50.0)
             
@@ -142,18 +182,23 @@ class AdvancedRiskCalculator:
             else:
                 position_size = round(position_size * 100) / 100
                 
-            required_margin = (position_size * contract_size * entry_price) / lev_value
+            required_margin = (position_size * contract_size * entry_price) / lev_value if lev_value > 0 else 0
             
-            return {
+            result = {
                 'position_size': position_size,
                 'risk_amount': risk_amount,
                 'stop_pips': stop_pips,
                 'required_margin': required_margin,
-                'risk_percent': (risk_amount / deposit) * 100,
+                'risk_percent': (risk_amount / deposit) * 100 if deposit > 0 else 0,
                 'free_margin': deposit - required_margin
             }
+            
+            # Сохраняем в кэш
+            calculation_cache.set(cache_key, result)
+            return result
+            
         except Exception as e:
-            logger.error(f"Error in position size calculation: {e}")
+            logger.error(f"Error in optimized position size calculation: {e}")
             return {
                 'position_size': 0.01,
                 'risk_amount': 0,
@@ -173,7 +218,7 @@ class AdvancedRiskCalculator:
         volume_distribution: List[float],
         direction: str
     ) -> List[Dict[str, Any]]:
-        """Расширенный расчет прибыли с учетом направления"""
+        """Оптимизированный расчет прибыли"""
         profits = []
         total_profit = 0
         
@@ -188,11 +233,14 @@ class AdvancedRiskCalculator:
                 tp_pips = abs(entry_price - tp) * 10000
                 
             volume_lots = position_size * (vol_pct / 100)
-            pip_value = AdvancedRiskCalculator.calculate_pip_value(
+            pip_value = OptimizedRiskCalculator.calculate_pip_value_cached(
                 instrument_type, currency_pair, volume_lots
             )
             profit = tp_pips * pip_value
             total_profit += profit
+            
+            contract_size = CONTRACT_SIZES.get(instrument_type, 100000)
+            position_value = position_size * contract_size * entry_price
             
             profits.append({
                 'level': i + 1,
@@ -202,7 +250,7 @@ class AdvancedRiskCalculator:
                 'profit': profit,
                 'cumulative_profit': total_profit,
                 'pips': tp_pips,
-                'roi_percent': (profit / (position_size * CONTRACT_SIZES.get(instrument_type, 100000) * entry_price)) * 100
+                'roi_percent': (profit / position_value) * 100 if position_value > 0 else 0
             })
             
         return profits
@@ -215,7 +263,7 @@ class AdvancedRiskCalculator:
         volume_distribution: List[float],
         direction: str
     ) -> Dict[str, float]:
-        """Расчет соотношения риск/вознаграждение с учетом направления"""
+        """Оптимизированный расчет соотношения риск/вознаграждение"""
         try:
             risk = abs(entry_price - stop_loss)
             total_reward = 0
@@ -235,10 +283,38 @@ class AdvancedRiskCalculator:
                 'total_reward': total_reward
             }
         except Exception as e:
-            logger.error(f"Error in risk/reward calculation: {e}")
+            logger.error(f"Error in optimized risk/reward calculation: {e}")
             return {'risk_reward_ratio': 0, 'total_risk': 0, 'total_reward': 0}
 
+# Функция для очистки старых данных
+async def cleanup_old_data():
+    """Очистка старых данных пользователей"""
+    current_time = time.time()
+    users_to_remove = []
+    
+    for user_id, data in user_data.items():
+        if 'last_activity' in data:
+            if current_time - data['last_activity'] > 3600:  # 1 час
+                users_to_remove.append(user_id)
+    
+    for user_id in users_to_remove:
+        del user_data[user_id]
+    logger.info(f"Очистка данных: удалено {len(users_to_remove)} пользователей")
+
+# Декоратор для логирования производительности
+def log_performance(func):
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = await func(*args, **kwargs)
+        execution_time = time.time() - start_time
+        if execution_time > 1.0:
+            logger.warning(f"Медленная операция: {func.__name__} заняла {execution_time:.2f}с")
+        return result
+    return wrapper
+
 # Основные обработчики команд
+@log_performance
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Главное меню"""
     if not update.message:
@@ -256,7 +332,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 """
     
     user_id = user.id
-    user_data[user_id] = {'start_time': datetime.now().isoformat()}
+    user_data[user_id] = {
+        'start_time': datetime.now().isoformat(),
+        'last_activity': time.time()
+    }
     
     keyboard = [
         [InlineKeyboardButton("📊 Профессиональный расчет", callback_data="pro_calculation")],
@@ -273,10 +352,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     return MAIN_MENU
 
+@log_performance
 async def quick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Быстрый расчет"""
     return await start_quick_calculation(update, context)
 
+@log_performance
 async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Управление портфелем"""
     portfolio_text = """
@@ -304,6 +385,7 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
     )
 
+@log_performance
 async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Аналитика стратегий"""
     analytics_text = """
@@ -332,6 +414,7 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
     )
 
+@log_performance
 async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """PRO Инструкция"""
     info_text = """
@@ -402,6 +485,7 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # Обработчики главного меню
+@log_performance
 async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора в главном меню"""
     query = update.callback_query
@@ -410,6 +494,11 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
     await query.answer()
     choice = query.data
+    
+    # Обновляем время активности
+    user_id = query.from_user.id
+    if user_id in user_data:
+        user_data[user_id]['last_activity'] = time.time()
     
     if choice == "pro_calculation":
         return await start_pro_calculation(update, context)
@@ -429,6 +518,7 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     return MAIN_MENU
 
+@log_performance
 async def start_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало профессионального расчета"""
     query = update.callback_query
@@ -448,6 +538,7 @@ async def start_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TY
         )
     return INSTRUMENT_TYPE
 
+@log_performance
 async def start_quick_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало быстрого расчета"""
     if update.message:
@@ -468,6 +559,7 @@ async def start_quick_calculation(update: Update, context: ContextTypes.DEFAULT_
     return CUSTOM_INSTRUMENT
 
 # Обработчики профессионального расчета
+@log_performance
 async def process_instrument_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора типа инструмента"""
     query = update.callback_query
@@ -478,6 +570,7 @@ async def process_instrument_type(update: Update, context: ContextTypes.DEFAULT_
     user_id = query.from_user.id
     instrument_type = query.data.replace('inst_type_', '')
     user_data[user_id]['instrument_type'] = instrument_type
+    user_data[user_id]['last_activity'] = time.time()
     
     # Получаем список инструментов для выбранного типа
     instruments = {
@@ -511,6 +604,7 @@ async def process_instrument_type(update: Update, context: ContextTypes.DEFAULT_
     )
     return CURRENCY
 
+@log_performance
 async def process_custom_instrument(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка ввода произвольного инструмента"""
     query = update.callback_query
@@ -527,6 +621,7 @@ async def process_custom_instrument(update: Update, context: ContextTypes.DEFAUL
         )
     return CUSTOM_INSTRUMENT
 
+@log_performance
 async def process_currency_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка ввода тикера инструмента"""
     if not update.message:
@@ -546,6 +641,7 @@ async def process_currency_input(update: Update, context: ContextTypes.DEFAULT_T
         return CUSTOM_INSTRUMENT
     
     user_data[user_id]['currency'] = currency
+    user_data[user_id]['last_activity'] = time.time()
     
     # Определяем тип инструмента по умолчанию, если не установлен
     if 'instrument_type' not in user_data[user_id]:
@@ -570,6 +666,7 @@ async def process_currency_input(update: Update, context: ContextTypes.DEFAULT_T
     )
     return DIRECTION
 
+@log_performance
 async def process_currency_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора инструмента из списка"""
     query = update.callback_query
@@ -586,6 +683,7 @@ async def process_currency_selection(update: Update, context: ContextTypes.DEFAU
     
     currency = query.data.replace('currency_', '')
     user_data[user_id]['currency'] = currency
+    user_data[user_id]['last_activity'] = time.time()
     
     await query.edit_message_text(
         f"✅ *Инструмент:* {currency}\n\n"
@@ -599,6 +697,7 @@ async def process_currency_selection(update: Update, context: ContextTypes.DEFAU
     )
     return DIRECTION
 
+@log_performance
 async def process_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора направления"""
     query = update.callback_query
@@ -609,6 +708,7 @@ async def process_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user_id = query.from_user.id
     direction = query.data.replace('direction_', '')
     user_data[user_id]['direction'] = direction
+    user_data[user_id]['last_activity'] = time.time()
     
     await query.edit_message_text(
         f"✅ *Направление:* {direction}\n\n"
@@ -626,6 +726,7 @@ async def process_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
     return RISK_PERCENT
 
+@log_performance
 async def process_risk_percent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора уровня риска"""
     query = update.callback_query
@@ -634,6 +735,7 @@ async def process_risk_percent(update: Update, context: ContextTypes.DEFAULT_TYP
         
     await query.answer()
     user_id = query.from_user.id
+    user_data[user_id]['last_activity'] = time.time()
     
     if query.data == "back_to_direction":
         currency = user_data[user_id].get('currency', 'EURUSD')
@@ -660,6 +762,7 @@ async def process_risk_percent(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     return DEPOSIT
 
+@log_performance
 async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка ввода депозита"""
     if not update.message:
@@ -677,6 +780,7 @@ async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return DEPOSIT
             
         user_data[user_id]['deposit'] = deposit
+        user_data[user_id]['last_activity'] = time.time()
         
         # Создаем клавиатуру с плечами
         keyboard = []
@@ -702,6 +806,7 @@ async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("❌ Пожалуйста, введите корректную сумму депозита:")
         return DEPOSIT
 
+@log_performance
 async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора плеча"""
     query = update.callback_query
@@ -710,6 +815,7 @@ async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
     await query.answer()
     user_id = query.from_user.id
+    user_data[user_id]['last_activity'] = time.time()
     
     if query.data == "back_to_deposit":
         await query.edit_message_text(
@@ -734,6 +840,7 @@ async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
     return ENTRY
 
+@log_performance
 async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка ввода цены входа"""
     if not update.message:
@@ -748,6 +855,7 @@ async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ENTRY
             
         user_data[user_id]['entry'] = entry
+        user_data[user_id]['last_activity'] = time.time()
         
         currency = user_data[user_id].get('currency', 'EURUSD')
         direction = user_data[user_id].get('direction', 'BUY')
@@ -765,6 +873,7 @@ async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text("❌ Пожалуйста, введите корректную цену входа:")
         return ENTRY
 
+@log_performance
 async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка ввода стоп-лосса"""
     if not update.message:
@@ -781,6 +890,7 @@ async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return STOP_LOSS
             
         user_data[user_id]['stop_loss'] = sl
+        user_data[user_id]['last_activity'] = time.time()
         
         currency = user_data[user_id].get('currency', 'EURUSD')
         
@@ -796,6 +906,7 @@ async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text("❌ Пожалуйста, введите корректную цену стоп-лосса:")
         return STOP_LOSS
 
+@log_performance
 async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка ввода тейк-профитов"""
     if not update.message:
@@ -811,6 +922,7 @@ async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYP
             return TAKE_PROFITS
             
         user_data[user_id]['take_profits'] = tps
+        user_data[user_id]['last_activity'] = time.time()
         
         await update.message.reply_text(
             f"✅ *Тейк-профиты:* {', '.join(map(str, tps))}\n\n"
@@ -826,16 +938,22 @@ async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ Пожалуйста, введите корректные цены тейк-профитов:")
         return TAKE_PROFITS
 
+@log_performance
 async def process_volume_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка распределения объемов и вывод результатов"""
+    """Оптимизированная обработка распределения объемов и вывод результатов"""
     if not update.message:
         return VOLUME_DISTRIBUTION
         
     user_id = update.message.from_user.id
     
     try:
+        # Обновляем время активности
+        if user_id in user_data:
+            user_data[user_id]['last_activity'] = time.time()
+        
         dist = [float(x.strip()) for x in update.message.text.split(',')]
         
+        # Быстрая валидация
         if abs(sum(dist) - 100) > 1e-5:
             await update.message.reply_text(
                 f"❌ *Сумма распределения должна быть 100%. Ваша сумма: {sum(dist)}%*\n"
@@ -844,9 +962,10 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
             )
             return VOLUME_DISTRIBUTION
         
-        if len(dist) != len(user_data[user_id].get('take_profits', [])):
+        user_tps = user_data[user_id].get('take_profits', [])
+        if len(dist) != len(user_tps):
             await update.message.reply_text(
-                f"❌ *Количество значений распределения должно совпадать с количеством TP ({len(user_data[user_id].get('take_profits', []))})*\n"
+                f"❌ *Количество значений распределения должно совпадать с количеством TP ({len(user_tps)})*\n"
                 "Пожалуйста, введите распределение заново:",
                 parse_mode='Markdown'
             )
@@ -855,8 +974,16 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
         user_data[user_id]['volume_distribution'] = dist
         data = user_data[user_id]
         
-        # Профессиональный расчет результатов
-        pos = AdvancedRiskCalculator.calculate_position_size(
+        # Отправляем быстрое сообщение о начале расчетов
+        quick_response = await update.message.reply_text(
+            "⚡ *Выполняю оптимизированные расчеты...*\n\n"
+            "⏳ *Расчет займет несколько секунд*",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏳ Расчеты...", callback_data="calculating")]])
+        )
+        
+        # Используем оптимизированный калькулятор
+        pos = OptimizedRiskCalculator.calculate_position_size(
             deposit=data['deposit'],
             leverage=data['leverage'],
             instrument_type=data['instrument_type'],
@@ -867,7 +994,7 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
             risk_percent=data.get('risk_percent', 0.02)
         )
         
-        profits = AdvancedRiskCalculator.calculate_profits(
+        profits = OptimizedRiskCalculator.calculate_profits(
             instrument_type=data['instrument_type'],
             currency_pair=data['currency'],
             entry_price=data['entry'],
@@ -877,7 +1004,7 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
             direction=data.get('direction', 'BUY')
         )
         
-        risk_reward = AdvancedRiskCalculator.calculate_risk_reward_ratio(
+        risk_reward = OptimizedRiskCalculator.calculate_risk_reward_ratio(
             entry_price=data['entry'],
             stop_loss=data['stop_loss'],
             take_profits=data['take_profits'],
@@ -889,69 +1016,71 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
         instrument_display = INSTRUMENT_TYPES.get(data['instrument_type'], data['instrument_type'])
         direction_display = "📈 BUY" if data.get('direction', 'BUY') == 'BUY' else "📉 SELL"
         
-        resp = f"""
-🎯 *PRO РЕЗУЛЬТАТЫ РАСЧЕТА*
-
-*📊 Основные параметры:*
-💼 Тип: {instrument_display}
-🌐 Инструмент: {data['currency']}
-🎯 Направление: {direction_display}
-💵 Депозит: ${data['deposit']:,.2f}
-⚖️ Плечо: {data['leverage']}
-📈 Вход: {data['entry']}
-🛑 Стоп-лосс: {data['stop_loss']}
-⚠️ Риск: {data.get('risk_percent', 0.02)*100}%
-
-*⚠️ Управление рисками:*
-📦 Размер позиции: *{pos['position_size']:.2f} лота*
-💰 Риск на сделку: ${pos['risk_amount']:.2f} ({pos['risk_percent']:.1f}% от депозита)
-📉 Стоп-лосс: {pos['stop_pips']:.0f} пунктов
-💳 Требуемая маржа: ${pos['required_margin']:.2f}
-🆓 Свободная маржа: ${pos['free_margin']:.2f}
-
-*📈 Аналитика:*
-⚖️ R/R соотношение: {risk_reward['risk_reward_ratio']:.2f}
-🎯 Общий риск: {risk_reward['total_risk']:.4f}
-🎯 Общее вознаграждение: {risk_reward['total_reward']:.4f}
-
-*🎯 Тейк-профиты и прибыль:*
-"""
+        # Формируем ответ частями для быстрого отображения
+        resp_parts = []
+        resp_parts.append("🎯 *PRO РЕЗУЛЬТАТЫ РАСЧЕТА*")
+        resp_parts.append("\n*📊 Основные параметры:*")
+        resp_parts.append(f"💼 Тип: {instrument_display}")
+        resp_parts.append(f"🌐 Инструмент: {data['currency']}")
+        resp_parts.append(f"🎯 Направление: {direction_display}")
+        resp_parts.append(f"💵 Депозит: ${data['deposit']:,.2f}")
+        resp_parts.append(f"⚖️ Плечо: {data['leverage']}")
+        resp_parts.append(f"📈 Вход: {data['entry']}")
+        resp_parts.append(f"🛑 Стоп-лосс: {data['stop_loss']}")
+        resp_parts.append(f"⚠️ Риск: {data.get('risk_percent', 0.02)*100}%")
+        
+        resp_parts.append("\n*⚠️ Управление рисками:*")
+        resp_parts.append(f"📦 Размер позиции: *{pos['position_size']:.2f} лота*")
+        resp_parts.append(f"💰 Риск на сделку: ${pos['risk_amount']:.2f} ({pos['risk_percent']:.1f}% от депозита)")
+        resp_parts.append(f"📉 Стоп-лосс: {pos['stop_pips']:.0f} пунктов")
+        resp_parts.append(f"💳 Требуемая маржа: ${pos['required_margin']:.2f}")
+        resp_parts.append(f"🆓 Свободная маржа: ${pos['free_margin']:.2f}")
+        
+        resp_parts.append("\n*📈 Аналитика:*")
+        resp_parts.append(f"⚖️ R/R соотношение: {risk_reward['risk_reward_ratio']:.2f}")
+        resp_parts.append(f"🎯 Общий риск: {risk_reward['total_risk']:.4f}")
+        resp_parts.append(f"🎯 Общее вознаграждение: {risk_reward['total_reward']:.4f}")
+        
+        resp_parts.append("\n*🎯 Тейк-профиты и прибыль:*")
         
         total_roi = 0
         for p in profits:
             roi_display = f" | 📊 ROI: {p['roi_percent']:.1f}%" if p['roi_percent'] > 0 else ""
-            resp += f"\n🎯 TP{p['level']} ({p['volume_percent']}% объема):"
-            resp += f"\n   💰 Цена: {p['price']}"
-            resp += f"\n   📦 Объем: {p['volume_lots']:.2f} лота"
-            resp += f"\n   📊 Пункты: {p['pips']:.0f} pips"
-            resp += f"\n   💵 Прибыль: ${p['profit']:.2f}{roi_display}"
-            resp += f"\n   📈 Накопленная прибыль: ${p['cumulative_profit']:.2f}\n"
+            resp_parts.append(f"\n🎯 TP{p['level']} ({p['volume_percent']}% объема):")
+            resp_parts.append(f"   💰 Цена: {p['price']}")
+            resp_parts.append(f"   📦 Объем: {p['volume_lots']:.2f} лота")
+            resp_parts.append(f"   📊 Пункты: {p['pips']:.0f} pips")
+            resp_parts.append(f"   💵 Прибыль: ${p['profit']:.2f}{roi_display}")
+            resp_parts.append(f"   📈 Накопленная прибыль: ${p['cumulative_profit']:.2f}")
             total_roi += p['roi_percent']
         
         # Итоговые показатели
         total_profit = profits[-1]['cumulative_profit'] if profits else 0
-        overall_roi = (total_profit / data['deposit']) * 100
+        overall_roi = (total_profit / data['deposit']) * 100 if data['deposit'] > 0 else 0
         
-        resp += f"\n*🏆 Итоговые показатели:*\n"
-        resp += f"💰 Общая прибыль: ${total_profit:.2f}\n"
-        resp += f"📊 Общий ROI: {overall_roi:.2f}%\n"
+        resp_parts.append(f"\n*🏆 Итоговые показатели:*")
+        resp_parts.append(f"💰 Общая прибыль: ${total_profit:.2f}")
+        resp_parts.append(f"📊 Общий ROI: {overall_roi:.2f}%")
         
         # Рекомендации
-        resp += f"\n*💡 Рекомендации:*\n"
+        resp_parts.append(f"\n*💡 Рекомендации:*")
         if risk_reward['risk_reward_ratio'] < 1:
-            resp += f"⚠️ Низкое R/R соотношение. Рекомендуется пересмотреть TP/SL\n"
+            resp_parts.append(f"⚠️ Низкое R/R соотношение. Рекомендуется пересмотреть TP/SL")
         elif risk_reward['risk_reward_ratio'] > 2:
-            resp += f"✅ Отличное R/R соотношение!\n"
+            resp_parts.append(f"✅ Отличное R/R соотношение!")
             
         if data.get('risk_percent', 0.02) > 0.03:
-            resp += f"⚠️ Высокий риск! Рекомендуется снизить до 2-3%\n"
+            resp_parts.append(f"⚠️ Высокий риск! Рекомендуется снизить до 2-3%")
         else:
-            resp += f"✅ Уровень риска в норме\n"
+            resp_parts.append(f"✅ Уровень риска в норме")
         
         # Добавляем информацию о разработчике
-        resp += f"\n---\n"
-        resp += f"👨‍💻 *PRO Разработчик:* [@fxfeelgood](https://t.me/fxfeelgood)\n"
-        resp += f"⚡ *PRO Версия 3.0 | Быстро • Умно • Точно*"
+        resp_parts.append(f"\n---")
+        resp_parts.append(f"👨‍💻 *PRO Разработчик:* [@fxfeelgood](https://t.me/fxfeelgood)")
+        resp_parts.append(f"⚡ *PRO Версия 3.0 | Быстро • Умно • Точно*")
+        
+        # Объединяем все части
+        final_response = "\n".join(resp_parts)
         
         keyboard = [
             [InlineKeyboardButton("💾 Сохранить стратегию", callback_data="save_preset")],
@@ -959,8 +1088,10 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
             [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
         ]
         
+        # Удаляем временное сообщение и отправляем финальный результат
+        await quick_response.delete()
         await update.message.reply_text(
-            resp, 
+            final_response, 
             parse_mode='Markdown', 
             reply_markup=InlineKeyboardMarkup(keyboard),
             disable_web_page_preview=True
@@ -968,7 +1099,7 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
         return ConversationHandler.END
         
     except Exception as e:
-        logger.error(f"Error in volume distribution: {e}")
+        logger.error(f"Error in optimized volume distribution: {e}")
         await update.message.reply_text(
             "❌ Произошла ошибка при расчете. Пожалуйста, начните заново с /start",
             parse_mode='Markdown'
@@ -976,6 +1107,7 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
         return ConversationHandler.END
 
 # Обработчики кнопок "Назад"
+@log_performance
 async def process_risk_percent_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Назад к выбору риска"""
     query = update.callback_query if hasattr(update, 'callback_query') else None
@@ -1016,6 +1148,7 @@ async def process_risk_percent_back(update: Update, context: ContextTypes.DEFAUL
     return RISK_PERCENT
 
 # Обработчики для быстрого расчета
+@log_performance
 async def process_quick_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка быстрого расчета"""
     if not update.message:
@@ -1040,7 +1173,8 @@ async def process_quick_calculation(update: Update, context: ContextTypes.DEFAUL
         'risk_percent': 0.02,
         'leverage': '1:100',
         'take_profits': [],
-        'volume_distribution': [100]
+        'volume_distribution': [100],
+        'last_activity': time.time()
     }
     
     # Определяем тип инструмента
@@ -1062,6 +1196,7 @@ async def process_quick_calculation(update: Update, context: ContextTypes.DEFAUL
     return DEPOSIT
 
 # Дополнительные обработчики
+@log_performance
 async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Сохранение пресета"""
     query = update.callback_query
@@ -1096,6 +1231,7 @@ async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         disable_web_page_preview=True
     )
 
+@log_performance
 async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать сохраненные пресеты"""
     if not update.message:
@@ -1139,6 +1275,7 @@ async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             disable_web_page_preview=True
         )
 
+@log_performance
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отмена диалога"""
     if update.message:
@@ -1152,6 +1289,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
     return ConversationHandler.END
 
+@log_performance
 async def new_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Новый расчет"""
     query = update.callback_query
@@ -1159,17 +1297,27 @@ async def new_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         await start(update, context)
 
+# Фоновая задача для очистки данных
+async def periodic_cleanup():
+    """Периодическая очистка старых данных"""
+    while True:
+        await asyncio.sleep(1800)  # Каждые 30 минут
+        await cleanup_old_data()
+
 def main():
-    """Основная функция для запуска бота"""
+    """Оптимизированная основная функция для запуска бота"""
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     if not token:
         logger.error("❌ PRO Токен бота не найден!")
         return
 
-    logger.info("🚀 Запуск PRO Risk Management Bot v3.0...")
+    logger.info("🚀 Запуск оптимизированного PRO Risk Management Bot v3.0...")
     
     # Создаем приложение
     application = Application.builder().token(token).build()
+
+    # Запускаем фоновую задачу для очистки
+    asyncio.create_task(periodic_cleanup())
 
     # Настраиваем ConversationHandler для главного меню
     conv_handler = ConversationHandler(
@@ -1210,25 +1358,26 @@ def main():
 
     # Получаем URL для вебхука
     webhook_url = os.getenv('RENDER_EXTERNAL_URL', '')
-    if not webhook_url:
-        logger.error("❌ RENDER_EXTERNAL_URL не установлен!")
-        return
-
-    # Запускаем вебхук
+    
+    # Запускаем вебхук или polling
     port = int(os.environ.get('PORT', 10000))
     
     logger.info(f"🌐 PRO Запуск вебхука на порту {port}")
-    logger.info(f"🔗 PRO Webhook URL: {webhook_url}/webhook")
     
     try:
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path="/webhook",
-            webhook_url=webhook_url + "/webhook"
-        )
+        if webhook_url:
+            logger.info(f"🔗 PRO Webhook URL: {webhook_url}/webhook")
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=port,
+                url_path="/webhook",
+                webhook_url=webhook_url + "/webhook"
+            )
+        else:
+            logger.info("🔄 PRO Запуск в режиме polling...")
+            application.run_polling()
     except Exception as e:
-        logger.error(f"❌ Ошибка при запуске PRO вебхука: {e}")
+        logger.error(f"❌ Ошибка при запуске PRO бота: {e}")
         logger.info("🔄 PRO Попытка запуска с polling...")
         application.run_polling()
 
