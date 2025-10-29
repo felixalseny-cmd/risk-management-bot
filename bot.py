@@ -289,17 +289,22 @@ class OptimizedRiskCalculator:
 # Функция для очистки старых данных
 async def cleanup_old_data():
     """Очистка старых данных пользователей"""
-    current_time = time.time()
-    users_to_remove = []
-    
-    for user_id, data in user_data.items():
-        if 'last_activity' in data:
-            if current_time - data['last_activity'] > 3600:  # 1 час
-                users_to_remove.append(user_id)
-    
-    for user_id in users_to_remove:
-        del user_data[user_id]
-    logger.info(f"Очистка данных: удалено {len(users_to_remove)} пользователей")
+    try:
+        current_time = time.time()
+        users_to_remove = []
+        
+        for user_id, data in user_data.items():
+            if 'last_activity' in data:
+                if current_time - data['last_activity'] > 3600:  # 1 час
+                    users_to_remove.append(user_id)
+        
+        for user_id in users_to_remove:
+            del user_data[user_id]
+        
+        if users_to_remove:
+            logger.info(f"Очистка данных: удалено {len(users_to_remove)} пользователей")
+    except Exception as e:
+        logger.error(f"Ошибка при очистке данных: {e}")
 
 # Декоратор для логирования производительности
 def log_performance(func):
@@ -1297,15 +1302,17 @@ async def new_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         await start(update, context)
 
-# Фоновая задача для очистки данных
-async def periodic_cleanup():
-    """Периодическая очистка старых данных"""
-    while True:
-        await asyncio.sleep(1800)  # Каждые 30 минут
+# Функция для запуска периодической очистки через job queue
+async def start_periodic_cleanup(application: Application):
+    """Запуск периодической очистки через job queue"""
+    async def cleanup_job(context: ContextTypes.DEFAULT_TYPE):
         await cleanup_old_data()
+    
+    # Запускаем задачу каждые 30 минут
+    application.job_queue.run_repeating(cleanup_job, interval=1800, first=10)
 
 def main():
-    """Оптимизированная основная функция для запуска бота"""
+    """Исправленная основная функция для запуска бота"""
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     if not token:
         logger.error("❌ PRO Токен бота не найден!")
@@ -1315,9 +1322,6 @@ def main():
     
     # Создаем приложение
     application = Application.builder().token(token).build()
-
-    # Запускаем фоновую задачу для очистки
-    asyncio.create_task(periodic_cleanup())
 
     # Настраиваем ConversationHandler для главного меню
     conv_handler = ConversationHandler(
@@ -1363,6 +1367,9 @@ def main():
     port = int(os.environ.get('PORT', 10000))
     
     logger.info(f"🌐 PRO Запуск вебхука на порту {port}")
+    
+    # Запускаем периодическую очистку после запуска приложения
+    application.post_init = start_periodic_cleanup
     
     try:
         if webhook_url:
