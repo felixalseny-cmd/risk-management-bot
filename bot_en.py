@@ -2,6 +2,8 @@ import os
 import logging
 import asyncio
 import re
+import time
+import functools
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -29,10 +31,35 @@ logger = logging.getLogger(__name__)
     STOP_LOSS, TAKE_PROFITS, VOLUME_DISTRIBUTION
 ) = range(12)
 
-# User data storage
+# Temporary storage
 user_data: Dict[int, Dict[str, Any]] = {}
 
-# Enhanced constants
+# Cache manager for faster calculations
+class CacheManager:
+    def __init__(self, max_size=1000, ttl=300):
+        self.cache = {}
+        self.max_size = max_size
+        self.ttl = ttl
+    
+    def get(self, key):
+        if key in self.cache:
+            data, timestamp = self.cache[key]
+            if time.time() - timestamp < self.ttl:
+                return data
+            else:
+                del self.cache[key]
+        return None
+    
+    def set(self, key, value):
+        if len(self.cache) >= self.max_size:
+            oldest_key = next(iter(self.cache))
+            del self.cache[oldest_key]
+        self.cache[key] = (value, time.time())
+
+# Global cache
+calculation_cache = CacheManager()
+
+# Extended constants
 INSTRUMENT_TYPES = {
     'forex': 'Forex',
     'crypto': 'Cryptocurrencies', 
@@ -84,13 +111,14 @@ LEVERAGES = ['1:10', '1:20', '1:50', '1:100', '1:200', '1:500', '1:1000']
 RISK_LEVELS = ['2%', '5%', '10%', '15%', '20%', '25%']
 TRADE_DIRECTIONS = ['BUY', 'SELL']
 
-# Advanced risk analysis class
-class AdvancedRiskCalculator:
-    """Advanced risk calculator with support for all instrument types"""
+# Optimized risk calculator with caching
+class OptimizedRiskCalculator:
+    """Optimized risk calculator with support for all instrument types"""
     
     @staticmethod
-    def calculate_pip_value(instrument_type: str, currency_pair: str, lot_size: float) -> float:
-        """Calculate pip value considering instrument type"""
+    @functools.lru_cache(maxsize=500)
+    def calculate_pip_value_cached(instrument_type: str, currency_pair: str, lot_size: float) -> float:
+        """Cached version of pip value calculation"""
         base_pip_value = PIP_VALUES.get(currency_pair, 10)
         
         if instrument_type == 'crypto':
@@ -111,12 +139,18 @@ class AdvancedRiskCalculator:
         direction: str,
         risk_percent: float = 0.02
     ) -> Dict[str, float]:
-        """Advanced position size calculation with direction"""
+        """Optimized version of position size calculation"""
         try:
+            # Create cache key
+            cache_key = f"pos_{deposit}_{leverage}_{instrument_type}_{currency_pair}_{entry_price}_{stop_loss}_{direction}_{risk_percent}"
+            cached_result = calculation_cache.get(cache_key)
+            if cached_result:
+                return cached_result
+            
             lev_value = int(leverage.split(':')[1])
             risk_amount = deposit * risk_percent
             
-            # Different calculations for different instrument types
+            # Optimized stop loss calculations
             if instrument_type == 'forex':
                 stop_pips = abs(entry_price - stop_loss) * 10000
             elif instrument_type == 'crypto':
@@ -126,14 +160,20 @@ class AdvancedRiskCalculator:
             else:
                 stop_pips = abs(entry_price - stop_loss) * 10000
 
-            pip_value_per_lot = AdvancedRiskCalculator.calculate_pip_value(
+            pip_value_per_lot = OptimizedRiskCalculator.calculate_pip_value_cached(
                 instrument_type, currency_pair, 1.0
             )
             
-            max_lots_by_risk = risk_amount / (stop_pips * pip_value_per_lot) if stop_pips > 0 else 0
+            if stop_pips > 0 and pip_value_per_lot > 0:
+                max_lots_by_risk = risk_amount / (stop_pips * pip_value_per_lot)
+            else:
+                max_lots_by_risk = 0
             
             contract_size = CONTRACT_SIZES.get(instrument_type, 100000)
-            max_lots_by_margin = (deposit * lev_value) / (contract_size * entry_price)
+            if entry_price > 0:
+                max_lots_by_margin = (deposit * lev_value) / (contract_size * entry_price)
+            else:
+                max_lots_by_margin = 0
             
             position_size = min(max_lots_by_risk, max_lots_by_margin, 50.0)
             
@@ -142,18 +182,23 @@ class AdvancedRiskCalculator:
             else:
                 position_size = round(position_size * 100) / 100
                 
-            required_margin = (position_size * contract_size * entry_price) / lev_value
+            required_margin = (position_size * contract_size * entry_price) / lev_value if lev_value > 0 else 0
             
-            return {
+            result = {
                 'position_size': position_size,
                 'risk_amount': risk_amount,
                 'stop_pips': stop_pips,
                 'required_margin': required_margin,
-                'risk_percent': (risk_amount / deposit) * 100,
+                'risk_percent': (risk_amount / deposit) * 100 if deposit > 0 else 0,
                 'free_margin': deposit - required_margin
             }
+            
+            # Save to cache
+            calculation_cache.set(cache_key, result)
+            return result
+            
         except Exception as e:
-            logger.error(f"Error in position size calculation: {e}")
+            logger.error(f"Error in optimized position size calculation: {e}")
             return {
                 'position_size': 0.01,
                 'risk_amount': 0,
@@ -173,7 +218,7 @@ class AdvancedRiskCalculator:
         volume_distribution: List[float],
         direction: str
     ) -> List[Dict[str, Any]]:
-        """Advanced profit calculation with direction"""
+        """Optimized profit calculation"""
         profits = []
         total_profit = 0
         
@@ -188,11 +233,14 @@ class AdvancedRiskCalculator:
                 tp_pips = abs(entry_price - tp) * 10000
                 
             volume_lots = position_size * (vol_pct / 100)
-            pip_value = AdvancedRiskCalculator.calculate_pip_value(
+            pip_value = OptimizedRiskCalculator.calculate_pip_value_cached(
                 instrument_type, currency_pair, volume_lots
             )
             profit = tp_pips * pip_value
             total_profit += profit
+            
+            contract_size = CONTRACT_SIZES.get(instrument_type, 100000)
+            position_value = position_size * contract_size * entry_price
             
             profits.append({
                 'level': i + 1,
@@ -202,7 +250,7 @@ class AdvancedRiskCalculator:
                 'profit': profit,
                 'cumulative_profit': total_profit,
                 'pips': tp_pips,
-                'roi_percent': (profit / (position_size * CONTRACT_SIZES.get(instrument_type, 100000) * entry_price)) * 100
+                'roi_percent': (profit / position_value) * 100 if position_value > 0 else 0
             })
             
         return profits
@@ -215,7 +263,7 @@ class AdvancedRiskCalculator:
         volume_distribution: List[float],
         direction: str
     ) -> Dict[str, float]:
-        """Calculate risk/reward ratio with direction"""
+        """Optimized risk/reward ratio calculation"""
         try:
             risk = abs(entry_price - stop_loss)
             total_reward = 0
@@ -235,16 +283,30 @@ class AdvancedRiskCalculator:
                 'total_reward': total_reward
             }
         except Exception as e:
-            logger.error(f"Error in risk/reward calculation: {e}")
+            logger.error(f"Error in optimized risk/reward calculation: {e}")
             return {'risk_reward_ratio': 0, 'total_risk': 0, 'total_reward': 0}
 
+# Performance logging decorator
+def log_performance(func):
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = await func(*args, **kwargs)
+        execution_time = time.time() - start_time
+        if execution_time > 1.0:
+            logger.warning(f"Slow operation: {func.__name__} took {execution_time:.2f}s")
+        return result
+    return wrapper
+
 # Main command handlers
+@log_performance
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Main menu"""
-    if not update.message:
-        return ConversationHandler.END
-    
-    user = update.message.from_user
+    if update.message:
+        user = update.message.from_user
+    else:
+        user = update.callback_query.from_user
+        
     user_name = user.first_name or "Trader"
     
     welcome_text = f"""
@@ -256,7 +318,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 """
     
     user_id = user.id
-    user_data[user_id] = {'start_time': datetime.now().isoformat()}
+    user_data[user_id] = {
+        'start_time': datetime.now().isoformat(),
+        'last_activity': time.time()
+    }
     
     keyboard = [
         [InlineKeyboardButton("📊 Professional Calculation", callback_data="pro_calculation")],
@@ -266,17 +331,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         [InlineKeyboardButton("📚 PRO Instructions", callback_data="pro_info")]
     ]
     
-    await update.message.reply_text(
-        welcome_text, 
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    if update.message:
+        await update.message.reply_text(
+            welcome_text, 
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            welcome_text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
     return MAIN_MENU
 
+@log_performance
 async def quick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Quick calculation command"""
+    """Quick calculation"""
     return await start_quick_calculation(update, context)
 
+@log_performance
 async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Portfolio management"""
     portfolio_text = """
@@ -297,13 +371,22 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👨‍💻 *PRO Developer:* [@fxfeelgood](https://t.me/fxfeelgood)
 """
-    await update.message.reply_text(
-        portfolio_text,
-        parse_mode='Markdown',
-        disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]])
-    )
+    if update.message:
+        await update.message.reply_text(
+            portfolio_text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]])
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            portfolio_text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]])
+        )
 
+@log_performance
 async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Strategy analytics"""
     analytics_text = """
@@ -325,13 +408,22 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👨‍💻 *PRO Developer:* [@fxfeelgood](https://t.me/fxfeelgood)
 """
-    await update.message.reply_text(
-        analytics_text,
-        parse_mode='Markdown',
-        disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]])
-    )
+    if update.message:
+        await update.message.reply_text(
+            analytics_text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]])
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            analytics_text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]])
+        )
 
+@log_performance
 async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """PRO Instructions"""
     info_text = """
@@ -394,14 +486,23 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 *PRO v3.0 | Fast • Smart • Accurate* 🚀
 """
-    await update.message.reply_text(
-        info_text, 
-        parse_mode='Markdown', 
-        disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]])
-    )
+    if update.message:
+        await update.message.reply_text(
+            info_text, 
+            parse_mode='Markdown', 
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]])
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            info_text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]])
+        )
 
 # Main menu handlers
+@log_performance
 async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle main menu selection"""
     query = update.callback_query
@@ -410,6 +511,11 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
     await query.answer()
     choice = query.data
+    
+    # Update activity time
+    user_id = query.from_user.id
+    if user_id in user_data:
+        user_data[user_id]['last_activity'] = time.time()
     
     if choice == "pro_calculation":
         return await start_pro_calculation(update, context)
@@ -429,6 +535,7 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     return MAIN_MENU
 
+@log_performance
 async def start_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start professional calculation"""
     query = update.callback_query
@@ -448,6 +555,7 @@ async def start_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TY
         )
     return INSTRUMENT_TYPE
 
+@log_performance
 async def start_quick_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start quick calculation"""
     if update.message:
@@ -468,6 +576,7 @@ async def start_quick_calculation(update: Update, context: ContextTypes.DEFAULT_
     return CUSTOM_INSTRUMENT
 
 # Professional calculation handlers
+@log_performance
 async def process_instrument_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process instrument type selection"""
     query = update.callback_query
@@ -478,6 +587,7 @@ async def process_instrument_type(update: Update, context: ContextTypes.DEFAULT_
     user_id = query.from_user.id
     instrument_type = query.data.replace('inst_type_', '')
     user_data[user_id]['instrument_type'] = instrument_type
+    user_data[user_id]['last_activity'] = time.time()
     
     # Get instruments for selected type
     instruments = {
@@ -511,6 +621,7 @@ async def process_instrument_type(update: Update, context: ContextTypes.DEFAULT_
     )
     return CURRENCY
 
+@log_performance
 async def process_custom_instrument(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process custom instrument input"""
     query = update.callback_query
@@ -527,6 +638,7 @@ async def process_custom_instrument(update: Update, context: ContextTypes.DEFAUL
         )
     return CUSTOM_INSTRUMENT
 
+@log_performance
 async def process_currency_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process instrument ticker input"""
     if not update.message:
@@ -546,6 +658,7 @@ async def process_currency_input(update: Update, context: ContextTypes.DEFAULT_T
         return CUSTOM_INSTRUMENT
     
     user_data[user_id]['currency'] = currency
+    user_data[user_id]['last_activity'] = time.time()
     
     # Determine instrument type by default if not set
     if 'instrument_type' not in user_data[user_id]:
@@ -570,6 +683,7 @@ async def process_currency_input(update: Update, context: ContextTypes.DEFAULT_T
     )
     return DIRECTION
 
+@log_performance
 async def process_currency_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process instrument selection from list"""
     query = update.callback_query
@@ -582,10 +696,12 @@ async def process_currency_selection(update: Update, context: ContextTypes.DEFAU
     if query.data == "custom_instrument":
         return await process_custom_instrument(update, context)
     elif query.data == "back_to_instruments":
+        user_data[user_id]['last_activity'] = time.time()
         return await start_pro_calculation(update, context)
     
     currency = query.data.replace('currency_', '')
     user_data[user_id]['currency'] = currency
+    user_data[user_id]['last_activity'] = time.time()
     
     await query.edit_message_text(
         f"✅ *Instrument:* {currency}\n\n"
@@ -599,6 +715,7 @@ async def process_currency_selection(update: Update, context: ContextTypes.DEFAU
     )
     return DIRECTION
 
+@log_performance
 async def process_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process direction selection"""
     query = update.callback_query
@@ -609,6 +726,7 @@ async def process_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user_id = query.from_user.id
     direction = query.data.replace('direction_', '')
     user_data[user_id]['direction'] = direction
+    user_data[user_id]['last_activity'] = time.time()
     
     await query.edit_message_text(
         f"✅ *Direction:* {direction}\n\n"
@@ -626,6 +744,7 @@ async def process_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
     return RISK_PERCENT
 
+@log_performance
 async def process_risk_percent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process risk level selection"""
     query = update.callback_query
@@ -634,6 +753,7 @@ async def process_risk_percent(update: Update, context: ContextTypes.DEFAULT_TYP
         
     await query.answer()
     user_id = query.from_user.id
+    user_data[user_id]['last_activity'] = time.time()
     
     if query.data == "back_to_direction":
         currency = user_data[user_id].get('currency', 'EURUSD')
@@ -660,6 +780,7 @@ async def process_risk_percent(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     return DEPOSIT
 
+@log_performance
 async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process deposit input"""
     if not update.message:
@@ -677,6 +798,7 @@ async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return DEPOSIT
             
         user_data[user_id]['deposit'] = deposit
+        user_data[user_id]['last_activity'] = time.time()
         
         # Create leverage keyboard
         keyboard = []
@@ -702,6 +824,7 @@ async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("❌ Please enter a valid deposit amount:")
         return DEPOSIT
 
+@log_performance
 async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process leverage selection"""
     query = update.callback_query
@@ -710,6 +833,7 @@ async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
     await query.answer()
     user_id = query.from_user.id
+    user_data[user_id]['last_activity'] = time.time()
     
     if query.data == "back_to_deposit":
         await query.edit_message_text(
@@ -734,6 +858,7 @@ async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
     return ENTRY
 
+@log_performance
 async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process entry price input"""
     if not update.message:
@@ -748,6 +873,7 @@ async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ENTRY
             
         user_data[user_id]['entry'] = entry
+        user_data[user_id]['last_activity'] = time.time()
         
         currency = user_data[user_id].get('currency', 'EURUSD')
         direction = user_data[user_id].get('direction', 'BUY')
@@ -765,6 +891,7 @@ async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text("❌ Please enter a valid entry price:")
         return ENTRY
 
+@log_performance
 async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process stop loss input"""
     if not update.message:
@@ -781,6 +908,7 @@ async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return STOP_LOSS
             
         user_data[user_id]['stop_loss'] = sl
+        user_data[user_id]['last_activity'] = time.time()
         
         currency = user_data[user_id].get('currency', 'EURUSD')
         
@@ -796,6 +924,7 @@ async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text("❌ Please enter a valid stop loss price:")
         return STOP_LOSS
 
+@log_performance
 async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process take profits input"""
     if not update.message:
@@ -811,6 +940,7 @@ async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYP
             return TAKE_PROFITS
             
         user_data[user_id]['take_profits'] = tps
+        user_data[user_id]['last_activity'] = time.time()
         
         await update.message.reply_text(
             f"✅ *Take profits:* {', '.join(map(str, tps))}\n\n"
@@ -826,16 +956,22 @@ async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ Please enter valid take profit prices:")
         return TAKE_PROFITS
 
+@log_performance
 async def process_volume_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process volume distribution and show results"""
+    """Optimized processing of volume distribution and results display"""
     if not update.message:
         return VOLUME_DISTRIBUTION
         
     user_id = update.message.from_user.id
     
     try:
+        # Update activity time
+        if user_id in user_data:
+            user_data[user_id]['last_activity'] = time.time()
+        
         dist = [float(x.strip()) for x in update.message.text.split(',')]
         
+        # Fast validation
         if abs(sum(dist) - 100) > 1e-5:
             await update.message.reply_text(
                 f"❌ *Distribution sum must be 100%. Your sum: {sum(dist)}%*\n"
@@ -844,9 +980,10 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
             )
             return VOLUME_DISTRIBUTION
         
-        if len(dist) != len(user_data[user_id].get('take_profits', [])):
+        user_tps = user_data[user_id].get('take_profits', [])
+        if len(dist) != len(user_tps):
             await update.message.reply_text(
-                f"❌ *Number of distribution values must match number of TPs ({len(user_data[user_id].get('take_profits', []))})*\n"
+                f"❌ *Number of distribution values must match number of TPs ({len(user_tps)})*\n"
                 "Please enter distribution again:",
                 parse_mode='Markdown'
             )
@@ -855,8 +992,15 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
         user_data[user_id]['volume_distribution'] = dist
         data = user_data[user_id]
         
-        # Professional results calculation
-        pos = AdvancedRiskCalculator.calculate_position_size(
+        # Send quick message about starting calculations
+        quick_response = await update.message.reply_text(
+            "⚡ *Performing optimized calculations...*\n\n"
+            "⏳ *Calculation will take a few seconds*",
+            parse_mode='Markdown'
+        )
+        
+        # Use optimized calculator
+        pos = OptimizedRiskCalculator.calculate_position_size(
             deposit=data['deposit'],
             leverage=data['leverage'],
             instrument_type=data['instrument_type'],
@@ -867,7 +1011,7 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
             risk_percent=data.get('risk_percent', 0.02)
         )
         
-        profits = AdvancedRiskCalculator.calculate_profits(
+        profits = OptimizedRiskCalculator.calculate_profits(
             instrument_type=data['instrument_type'],
             currency_pair=data['currency'],
             entry_price=data['entry'],
@@ -877,7 +1021,7 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
             direction=data.get('direction', 'BUY')
         )
         
-        risk_reward = AdvancedRiskCalculator.calculate_risk_reward_ratio(
+        risk_reward = OptimizedRiskCalculator.calculate_risk_reward_ratio(
             entry_price=data['entry'],
             stop_loss=data['stop_loss'],
             take_profits=data['take_profits'],
@@ -889,69 +1033,71 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
         instrument_display = INSTRUMENT_TYPES.get(data['instrument_type'], data['instrument_type'])
         direction_display = "📈 BUY" if data.get('direction', 'BUY') == 'BUY' else "📉 SELL"
         
-        resp = f"""
-🎯 *PRO CALCULATION RESULTS*
-
-*📊 Main Parameters:*
-💼 Type: {instrument_display}
-🌐 Instrument: {data['currency']}
-🎯 Direction: {direction_display}
-💵 Deposit: ${data['deposit']:,.2f}
-⚖️ Leverage: {data['leverage']}
-📈 Entry: {data['entry']}
-🛑 Stop loss: {data['stop_loss']}
-⚠️ Risk: {data.get('risk_percent', 0.02)*100}%
-
-*⚠️ Risk Management:*
-📦 Position size: *{pos['position_size']:.2f} lots*
-💰 Risk per trade: ${pos['risk_amount']:.2f} ({pos['risk_percent']:.1f}% of deposit)
-📉 Stop loss: {pos['stop_pips']:.0f} points
-💳 Required margin: ${pos['required_margin']:.2f}
-🆓 Free margin: ${pos['free_margin']:.2f}
-
-*📈 Analytics:*
-⚖️ R/R ratio: {risk_reward['risk_reward_ratio']:.2f}
-🎯 Total risk: {risk_reward['total_risk']:.4f}
-🎯 Total reward: {risk_reward['total_reward']:.4f}
-
-*🎯 Take profits and profit:*
-"""
+        # Build response in parts for quick display
+        resp_parts = []
+        resp_parts.append("🎯 *PRO CALCULATION RESULTS*")
+        resp_parts.append("\n*📊 Main Parameters:*")
+        resp_parts.append(f"💼 Type: {instrument_display}")
+        resp_parts.append(f"🌐 Instrument: {data['currency']}")
+        resp_parts.append(f"🎯 Direction: {direction_display}")
+        resp_parts.append(f"💵 Deposit: ${data['deposit']:,.2f}")
+        resp_parts.append(f"⚖️ Leverage: {data['leverage']}")
+        resp_parts.append(f"📈 Entry: {data['entry']}")
+        resp_parts.append(f"🛑 Stop loss: {data['stop_loss']}")
+        resp_parts.append(f"⚠️ Risk: {data.get('risk_percent', 0.02)*100}%")
+        
+        resp_parts.append("\n*⚠️ Risk Management:*")
+        resp_parts.append(f"📦 Position size: *{pos['position_size']:.2f} lots*")
+        resp_parts.append(f"💰 Risk per trade: ${pos['risk_amount']:.2f} ({pos['risk_percent']:.1f}% of deposit)")
+        resp_parts.append(f"📉 Stop loss: {pos['stop_pips']:.0f} points")
+        resp_parts.append(f"💳 Required margin: ${pos['required_margin']:.2f}")
+        resp_parts.append(f"🆓 Free margin: ${pos['free_margin']:.2f}")
+        
+        resp_parts.append("\n*📈 Analytics:*")
+        resp_parts.append(f"⚖️ R/R ratio: {risk_reward['risk_reward_ratio']:.2f}")
+        resp_parts.append(f"🎯 Total risk: {risk_reward['total_risk']:.4f}")
+        resp_parts.append(f"🎯 Total reward: {risk_reward['total_reward']:.4f}")
+        
+        resp_parts.append("\n*🎯 Take profits and profit:*")
         
         total_roi = 0
         for p in profits:
             roi_display = f" | 📊 ROI: {p['roi_percent']:.1f}%" if p['roi_percent'] > 0 else ""
-            resp += f"\n🎯 TP{p['level']} ({p['volume_percent']}% volume):"
-            resp += f"\n   💰 Price: {p['price']}"
-            resp += f"\n   📦 Volume: {p['volume_lots']:.2f} lots"
-            resp += f"\n   📊 Points: {p['pips']:.0f} pips"
-            resp += f"\n   💵 Profit: ${p['profit']:.2f}{roi_display}"
-            resp += f"\n   📈 Cumulative profit: ${p['cumulative_profit']:.2f}\n"
+            resp_parts.append(f"\n🎯 TP{p['level']} ({p['volume_percent']}% volume):")
+            resp_parts.append(f"   💰 Price: {p['price']}")
+            resp_parts.append(f"   📦 Volume: {p['volume_lots']:.2f} lots")
+            resp_parts.append(f"   📊 Points: {p['pips']:.0f} pips")
+            resp_parts.append(f"   💵 Profit: ${p['profit']:.2f}{roi_display}")
+            resp_parts.append(f"   📈 Cumulative profit: ${p['cumulative_profit']:.2f}")
             total_roi += p['roi_percent']
         
         # Final metrics
         total_profit = profits[-1]['cumulative_profit'] if profits else 0
-        overall_roi = (total_profit / data['deposit']) * 100
+        overall_roi = (total_profit / data['deposit']) * 100 if data['deposit'] > 0 else 0
         
-        resp += f"\n*🏆 Final Metrics:*\n"
-        resp += f"💰 Total profit: ${total_profit:.2f}\n"
-        resp += f"📊 Overall ROI: {overall_roi:.2f}%\n"
+        resp_parts.append(f"\n*🏆 Final Metrics:*")
+        resp_parts.append(f"💰 Total profit: ${total_profit:.2f}")
+        resp_parts.append(f"📊 Overall ROI: {overall_roi:.2f}%")
         
         # Recommendations
-        resp += f"\n*💡 Recommendations:*\n"
+        resp_parts.append(f"\n*💡 Recommendations:*")
         if risk_reward['risk_reward_ratio'] < 1:
-            resp += f"⚠️ Low R/R ratio. Consider revising TP/SL\n"
+            resp_parts.append(f"⚠️ Low R/R ratio. Consider revising TP/SL")
         elif risk_reward['risk_reward_ratio'] > 2:
-            resp += f"✅ Excellent R/R ratio!\n"
+            resp_parts.append(f"✅ Excellent R/R ratio!")
             
         if data.get('risk_percent', 0.02) > 0.03:
-            resp += f"⚠️ High risk! Recommended to reduce to 2-3%\n"
+            resp_parts.append(f"⚠️ High risk! Recommended to reduce to 2-3%")
         else:
-            resp += f"✅ Risk level is normal\n"
+            resp_parts.append(f"✅ Risk level is normal")
         
         # Add developer info
-        resp += f"\n---\n"
-        resp += f"👨‍💻 *PRO Developer:* [@fxfeelgood](https://t.me/fxfeelgood)\n"
-        resp += f"⚡ *PRO Version 3.0 | Fast • Smart • Accurate*"
+        resp_parts.append(f"\n---")
+        resp_parts.append(f"👨‍💻 *PRO Developer:* [@fxfeelgood](https://t.me/fxfeelgood)")
+        resp_parts.append(f"⚡ *PRO Version 3.0 | Fast • Smart • Accurate*")
+        
+        # Combine all parts
+        final_response = "\n".join(resp_parts)
         
         keyboard = [
             [InlineKeyboardButton("💾 Save Strategy", callback_data="save_preset")],
@@ -959,8 +1105,10 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
             [InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]
         ]
         
+        # Delete temporary message and send final result
+        await quick_response.delete()
         await update.message.reply_text(
-            resp, 
+            final_response, 
             parse_mode='Markdown', 
             reply_markup=InlineKeyboardMarkup(keyboard),
             disable_web_page_preview=True
@@ -968,7 +1116,7 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
         return ConversationHandler.END
         
     except Exception as e:
-        logger.error(f"Error in volume distribution: {e}")
+        logger.error(f"Error in optimized volume distribution: {e}")
         await update.message.reply_text(
             "❌ Error occurred during calculation. Please start over with /start",
             parse_mode='Markdown'
@@ -976,46 +1124,104 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
         return ConversationHandler.END
 
 # Back button handlers
-async def process_risk_percent_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Back to risk selection"""
-    query = update.callback_query if hasattr(update, 'callback_query') else None
-    user_id = update.message.from_user.id if update.message else query.from_user.id
+@log_performance
+async def handle_back_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle all back buttons"""
+    query = update.callback_query
+    if not query:
+        return MAIN_MENU
+        
+    await query.answer()
+    user_id = query.from_user.id
+    user_data[user_id]['last_activity'] = time.time()
     
-    risk_percent = user_data[user_id].get('risk_percent', 0.02)
+    back_action = query.data
     
-    if query:
+    if back_action == "back_to_instruments":
+        return await start_pro_calculation(update, context)
+    elif back_action == "back_to_direction":
+        currency = user_data[user_id].get('currency', 'EURUSD')
         await query.edit_message_text(
-            f"✅ *Risk level:* {risk_percent*100}%\n\n"
-            "⚖️ *Select risk level per trade:*",
+            f"✅ *Instrument:* {currency}\n\n"
+            "🎯 *Select trade direction:*",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("2% (Conservative)", callback_data="risk_0.02")],
-                [InlineKeyboardButton("5% (Moderate)", callback_data="risk_0.05")],
-                [InlineKeyboardButton("10% (Aggressive)", callback_data="risk_0.10")],
-                [InlineKeyboardButton("15% (High)", callback_data="risk_0.15")],
-                [InlineKeyboardButton("20% (Very High)", callback_data="risk_0.20")],
-                [InlineKeyboardButton("25% (Extreme)", callback_data="risk_0.25")],
-                [InlineKeyboardButton("🔙 Back", callback_data="back_to_direction")]
+                [InlineKeyboardButton("📈 BUY", callback_data="direction_BUY")],
+                [InlineKeyboardButton("📉 SELL", callback_data="direction_SELL")],
+                [InlineKeyboardButton("🔙 Back", callback_data="back_to_instruments")]
             ])
         )
-    else:
-        await update.message.reply_text(
-            f"✅ *Risk level:* {risk_percent*100}%\n\n"
-            "⚖️ *Select risk level per trade:*",
+        return DIRECTION
+    elif back_action == "back_to_risk":
+        currency = user_data[user_id].get('currency', 'EURUSD')
+        await query.edit_message_text(
+            f"✅ *Instrument:* {currency}\n\n"
+            "🎯 *Select trade direction:*",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("2% (Conservative)", callback_data="risk_0.02")],
-                [InlineKeyboardButton("5% (Moderate)", callback_data="risk_0.05")],
-                [InlineKeyboardButton("10% (Aggressive)", callback_data="risk_0.10")],
-                [InlineKeyboardButton("15% (High)", callback_data="risk_0.15")],
-                [InlineKeyboardButton("20% (Very High)", callback_data="risk_0.20")],
-                [InlineKeyboardButton("25% (Extreme)", callback_data="risk_0.25")],
-                [InlineKeyboardButton("🔙 Back", callback_data="back_to_direction")]
+                [InlineKeyboardButton("📈 BUY", callback_data="direction_BUY")],
+                [InlineKeyboardButton("📉 SELL", callback_data="direction_SELL")],
+                [InlineKeyboardButton("🔙 Back", callback_data="back_to_instruments")]
             ])
         )
-    return RISK_PERCENT
+        return DIRECTION
+    elif back_action == "back_to_deposit":
+        await query.edit_message_text(
+            "💵 *Enter deposit amount in USD:*",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_risk")]])
+        )
+        return DEPOSIT
+    elif back_action == "back_to_leverage":
+        currency = user_data[user_id].get('currency', 'EURUSD')
+        direction = user_data[user_id].get('direction', 'BUY')
+        
+        await query.edit_message_text(
+            f"✅ *Direction:* {direction}\n\n"
+            f"📈 *Enter entry price for {currency}:*",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_entry")]])
+        )
+        return ENTRY
+    elif back_action == "back_to_entry":
+        currency = user_data[user_id].get('currency', 'EURUSD')
+        direction = user_data[user_id].get('direction', 'BUY')
+        
+        await query.edit_message_text(
+            f"✅ *Direction:* {direction}\n\n"
+            f"🛑 *Enter stop loss price for {currency}:*",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_stop_loss")]])
+        )
+        return STOP_LOSS
+    elif back_action == "back_to_stop_loss":
+        currency = user_data[user_id].get('currency', 'EURUSD')
+        
+        await query.edit_message_text(
+            f"✅ *Stop loss:* {user_data[user_id].get('stop_loss', 'N/A')}\n\n"
+            f"🎯 *Enter take profit prices for {currency} separated by commas* (e.g.: 1.0550, 1.0460):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_take_profits")]])
+        )
+        return TAKE_PROFITS
+    elif back_action == "back_to_take_profits":
+        tps = user_data[user_id].get('take_profits', [])
+        
+        await query.edit_message_text(
+            f"✅ *Take profits:* {', '.join(map(str, tps))}\n\n"
+            f"📊 *Enter volume distribution in % for each take profit separated by commas*\n"
+            f"(total {len(tps)} values, sum must be 100%):\n"
+            f"*Example:* 50, 30, 20",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_to_volume_distribution")]])
+        )
+        return VOLUME_DISTRIBUTION
+    
+    # If action not recognized, return to main menu
+    return await start(update, context)
 
 # Quick calculation handlers
+@log_performance
 async def process_quick_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process quick calculation"""
     if not update.message:
@@ -1040,7 +1246,8 @@ async def process_quick_calculation(update: Update, context: ContextTypes.DEFAUL
         'risk_percent': 0.02,
         'leverage': '1:100',
         'take_profits': [],
-        'volume_distribution': [100]
+        'volume_distribution': [100],
+        'last_activity': time.time()
     }
     
     # Determine instrument type
@@ -1062,6 +1269,7 @@ async def process_quick_calculation(update: Update, context: ContextTypes.DEFAUL
     return DEPOSIT
 
 # Additional handlers
+@log_performance
 async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Save preset"""
     query = update.callback_query
@@ -1096,6 +1304,7 @@ async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         disable_web_page_preview=True
     )
 
+@log_performance
 async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show saved presets"""
     if not update.message:
@@ -1139,6 +1348,7 @@ async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             disable_web_page_preview=True
         )
 
+@log_performance
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancel conversation"""
     if update.message:
@@ -1152,6 +1362,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
     return ConversationHandler.END
 
+@log_performance
 async def new_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """New calculation"""
     query = update.callback_query
@@ -1160,13 +1371,13 @@ async def new_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
 
 def main():
-    """Main function to run bot"""
+    """Fixed main function to run bot"""
     token = os.getenv('TELEGRAM_BOT_TOKEN_EN')
     if not token:
         logger.error("❌ PRO Bot token not found!")
         return
 
-    logger.info("🚀 Starting PRO Risk Management Bot v3.0...")
+    logger.info("🚀 Starting optimized PRO Risk Management Bot v3.0...")
     
     # Create application
     application = Application.builder().token(token).build()
@@ -1178,27 +1389,53 @@ def main():
             CommandHandler('quick', quick_command),
             CommandHandler('portfolio', portfolio_command),
             CommandHandler('analytics', analytics_command),
-            CommandHandler('info', pro_info_command)
+            CommandHandler('info', pro_info_command),
+            CallbackQueryHandler(handle_main_menu, pattern='^(pro_calculation|quick_calculation|portfolio|analytics|pro_info|main_menu)$')
         ],
         states={
             MAIN_MENU: [CallbackQueryHandler(handle_main_menu, pattern='^(pro_calculation|quick_calculation|portfolio|analytics|pro_info|main_menu)$')],
             INSTRUMENT_TYPE: [CallbackQueryHandler(process_instrument_type, pattern='^inst_type_')],
             CUSTOM_INSTRUMENT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_currency_input),
-                CallbackQueryHandler(process_currency_selection, pattern='^(back_to_instruments|custom_instrument)')
+                CallbackQueryHandler(process_currency_selection, pattern='^(currency_|custom_instrument)'),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_instruments$')
             ],
-            CURRENCY: [CallbackQueryHandler(process_currency_selection, pattern='^(currency_|back_to_instruments|custom_instrument)')],
-            DIRECTION: [CallbackQueryHandler(process_direction, pattern='^(direction_|back_to_instruments)')],
-            RISK_PERCENT: [CallbackQueryHandler(process_risk_percent, pattern='^(risk_|back_to_direction|back_to_risk)')],
+            CURRENCY: [
+                CallbackQueryHandler(process_currency_selection, pattern='^(currency_|custom_instrument)'),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_instruments$')
+            ],
+            DIRECTION: [
+                CallbackQueryHandler(process_direction, pattern='^direction_'),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_instruments$')
+            ],
+            RISK_PERCENT: [
+                CallbackQueryHandler(process_risk_percent, pattern='^risk_'),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_direction$')
+            ],
             DEPOSIT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_deposit),
-                CallbackQueryHandler(process_risk_percent_back, pattern='^back_to_deposit$')
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_deposit$')
             ],
-            LEVERAGE: [CallbackQueryHandler(process_leverage, pattern='^(leverage_|back_to_deposit)')],
-            ENTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_entry)],
-            STOP_LOSS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_stop_loss)],
-            TAKE_PROFITS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_take_profits)],
-            VOLUME_DISTRIBUTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_volume_distribution)],
+            LEVERAGE: [
+                CallbackQueryHandler(process_leverage, pattern='^leverage_'),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_deposit$')
+            ],
+            ENTRY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_entry),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_entry$')
+            ],
+            STOP_LOSS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_stop_loss),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_stop_loss$')
+            ],
+            TAKE_PROFITS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_take_profits),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_take_profits$')
+            ],
+            VOLUME_DISTRIBUTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_volume_distribution),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_volume_distribution$')
+            ],
         },
         fallbacks=[CommandHandler('cancel', cancel)]
     )
@@ -1207,30 +1444,32 @@ def main():
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(save_preset, pattern='^save_preset$'))
     application.add_handler(CallbackQueryHandler(new_calculation, pattern='^new_calculation$'))
+    application.add_handler(CallbackQueryHandler(handle_back_buttons, pattern='^back_to_'))
 
     # Get webhook URL
     webhook_url = os.getenv('RENDER_EXTERNAL_URL_EN', '')
-    if not webhook_url:
-        logger.error("❌ RENDER_EXTERNAL_URL_EN not set!")
-        return
-
-    # Start webhook
+    
+    # Start webhook or polling
     port = int(os.environ.get('PORT', 10000))
     
-    logger.info(f"🌐 PRO Starting webhook on port {port}")
-    logger.info(f"🔗 PRO Webhook URL: {webhook_url}/webhook")
+    logger.info(f"🌐 PRO Starting on port {port}")
     
     try:
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path="/webhook",
-            webhook_url=webhook_url + "/webhook"
-        )
+        if webhook_url and "render.com" in webhook_url:
+            logger.info(f"🔗 PRO Webhook URL: {webhook_url}/webhook")
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=port,
+                url_path="/webhook",
+                webhook_url=webhook_url + "/webhook"
+            )
+        else:
+            logger.info("🔄 PRO Starting in polling mode...")
+            application.run_polling()
     except Exception as e:
-        logger.error(f"❌ Error starting PRO webhook: {e}")
-        logger.info("🔄 PRO Trying polling...")
-        application.run_polling()
+        logger.error(f"❌ Error starting PRO bot: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 if __name__ == '__main__':
     main()
