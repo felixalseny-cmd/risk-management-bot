@@ -14,7 +14,3 @@ services:
         value: https://risk-management-bot-pro.onrender.com
     healthCheckPath: /
     autoDeploy: true
-    disk:
-      name: cache
-      mountPath: /opt/render/project/src/cache
-      sizeGB: 1
