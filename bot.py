@@ -286,26 +286,6 @@ class OptimizedRiskCalculator:
             logger.error(f"Error in optimized risk/reward calculation: {e}")
             return {'risk_reward_ratio': 0, 'total_risk': 0, 'total_reward': 0}
 
-# Функция для очистки старых данных
-async def cleanup_old_data():
-    """Очистка старых данных пользователей"""
-    try:
-        current_time = time.time()
-        users_to_remove = []
-        
-        for user_id, data in user_data.items():
-            if 'last_activity' in data:
-                if current_time - data['last_activity'] > 3600:  # 1 час
-                    users_to_remove.append(user_id)
-        
-        for user_id in users_to_remove:
-            del user_data[user_id]
-        
-        if users_to_remove:
-            logger.info(f"Очистка данных: удалено {len(users_to_remove)} пользователей")
-    except Exception as e:
-        logger.error(f"Ошибка при очистке данных: {e}")
-
 # Декоратор для логирования производительности
 def log_performance(func):
     @functools.wraps(func)
@@ -322,10 +302,11 @@ def log_performance(func):
 @log_performance
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Главное меню"""
-    if not update.message:
-        return ConversationHandler.END
-    
-    user = update.message.from_user
+    if update.message:
+        user = update.message.from_user
+    else:
+        user = update.callback_query.from_user
+        
     user_name = user.first_name or "Трейдер"
     
     welcome_text = f"""
@@ -350,11 +331,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         [InlineKeyboardButton("📚 PRO Инструкция", callback_data="pro_info")]
     ]
     
-    await update.message.reply_text(
-        welcome_text, 
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    if update.message:
+        await update.message.reply_text(
+            welcome_text, 
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            welcome_text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
     return MAIN_MENU
 
 @log_performance
@@ -383,12 +371,20 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👨‍💻 *PRO Разработчик:* [@fxfeelgood](https://t.me/fxfeelgood)
 """
-    await update.message.reply_text(
-        portfolio_text,
-        parse_mode='Markdown',
-        disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
-    )
+    if update.message:
+        await update.message.reply_text(
+            portfolio_text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            portfolio_text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+        )
 
 @log_performance
 async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -412,12 +408,20 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👨‍💻 *PRO Разработчик:* [@fxfeelgood](https://t.me/fxfeelgood)
 """
-    await update.message.reply_text(
-        analytics_text,
-        parse_mode='Markdown',
-        disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
-    )
+    if update.message:
+        await update.message.reply_text(
+            analytics_text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            analytics_text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+        )
 
 @log_performance
 async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -482,12 +486,20 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 *PRO v3.0 | Быстро • Умно • Точно* 🚀
 """
-    await update.message.reply_text(
-        info_text, 
-        parse_mode='Markdown', 
-        disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
-    )
+    if update.message:
+        await update.message.reply_text(
+            info_text, 
+            parse_mode='Markdown', 
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            info_text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+        )
 
 # Обработчики главного меню
 @log_performance
@@ -684,6 +696,7 @@ async def process_currency_selection(update: Update, context: ContextTypes.DEFAU
     if query.data == "custom_instrument":
         return await process_custom_instrument(update, context)
     elif query.data == "back_to_instruments":
+        user_data[user_id]['last_activity'] = time.time()
         return await start_pro_calculation(update, context)
     
     currency = query.data.replace('currency_', '')
@@ -983,8 +996,7 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
         quick_response = await update.message.reply_text(
             "⚡ *Выполняю оптимизированные расчеты...*\n\n"
             "⏳ *Расчет займет несколько секунд*",
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏳ Расчеты...", callback_data="calculating")]])
+            parse_mode='Markdown'
         )
         
         # Используем оптимизированный калькулятор
@@ -1113,44 +1125,100 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
 
 # Обработчики кнопок "Назад"
 @log_performance
-async def process_risk_percent_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Назад к выбору риска"""
-    query = update.callback_query if hasattr(update, 'callback_query') else None
-    user_id = update.message.from_user.id if update.message else query.from_user.id
+async def handle_back_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка всех кнопок возврата"""
+    query = update.callback_query
+    if not query:
+        return MAIN_MENU
+        
+    await query.answer()
+    user_id = query.from_user.id
+    user_data[user_id]['last_activity'] = time.time()
     
-    risk_percent = user_data[user_id].get('risk_percent', 0.02)
+    back_action = query.data
     
-    if query:
+    if back_action == "back_to_instruments":
+        return await start_pro_calculation(update, context)
+    elif back_action == "back_to_direction":
+        currency = user_data[user_id].get('currency', 'EURUSD')
         await query.edit_message_text(
-            f"✅ *Уровень риска:* {risk_percent*100}%\n\n"
-            "⚖️ *Выберите уровень риска на сделку:*",
+            f"✅ *Инструмент:* {currency}\n\n"
+            "🎯 *Выберите направление сделки:*",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("2% (Консервативный)", callback_data="risk_0.02")],
-                [InlineKeyboardButton("5% (Умеренный)", callback_data="risk_0.05")],
-                [InlineKeyboardButton("10% (Агрессивный)", callback_data="risk_0.10")],
-                [InlineKeyboardButton("15% (Высокий)", callback_data="risk_0.15")],
-                [InlineKeyboardButton("20% (Очень высокий)", callback_data="risk_0.20")],
-                [InlineKeyboardButton("25% (Экстремальный)", callback_data="risk_0.25")],
-                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_direction")]
+                [InlineKeyboardButton("📈 BUY (Покупка)", callback_data="direction_BUY")],
+                [InlineKeyboardButton("📉 SELL (Продажа)", callback_data="direction_SELL")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_instruments")]
             ])
         )
-    else:
-        await update.message.reply_text(
-            f"✅ *Уровень риска:* {risk_percent*100}%\n\n"
-            "⚖️ *Выберите уровень риска на сделку:*",
+        return DIRECTION
+    elif back_action == "back_to_risk":
+        currency = user_data[user_id].get('currency', 'EURUSD')
+        await query.edit_message_text(
+            f"✅ *Инструмент:* {currency}\n\n"
+            "🎯 *Выберите направление сделки:*",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("2% (Консервативный)", callback_data="risk_0.02")],
-                [InlineKeyboardButton("5% (Умеренный)", callback_data="risk_0.05")],
-                [InlineKeyboardButton("10% (Агрессивный)", callback_data="risk_0.10")],
-                [InlineKeyboardButton("15% (Высокий)", callback_data="risk_0.15")],
-                [InlineKeyboardButton("20% (Очень высокий)", callback_data="risk_0.20")],
-                [InlineKeyboardButton("25% (Экстремальный)", callback_data="risk_0.25")],
-                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_direction")]
+                [InlineKeyboardButton("📈 BUY (Покупка)", callback_data="direction_BUY")],
+                [InlineKeyboardButton("📉 SELL (Продажа)", callback_data="direction_SELL")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_instruments")]
             ])
         )
-    return RISK_PERCENT
+        return DIRECTION
+    elif back_action == "back_to_deposit":
+        await query.edit_message_text(
+            "💵 *Введите сумму депозита в USD:*",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_risk")]])
+        )
+        return DEPOSIT
+    elif back_action == "back_to_leverage":
+        currency = user_data[user_id].get('currency', 'EURUSD')
+        direction = user_data[user_id].get('direction', 'BUY')
+        
+        await query.edit_message_text(
+            f"✅ *Направление:* {direction}\n\n"
+            f"📈 *Введите цену входа для {currency}:*",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_entry")]])
+        )
+        return ENTRY
+    elif back_action == "back_to_entry":
+        currency = user_data[user_id].get('currency', 'EURUSD')
+        direction = user_data[user_id].get('direction', 'BUY')
+        
+        await query.edit_message_text(
+            f"✅ *Направление:* {direction}\n\n"
+            f"🛑 *Введите цену стоп-лосса для {currency}:*",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_stop_loss")]])
+        )
+        return STOP_LOSS
+    elif back_action == "back_to_stop_loss":
+        currency = user_data[user_id].get('currency', 'EURUSD')
+        
+        await query.edit_message_text(
+            f"✅ *Стоп-лосс:* {user_data[user_id].get('stop_loss', 'N/A')}\n\n"
+            f"🎯 *Введите цены тейк-профитов для {currency} через запятую* (например: 1.0550, 1.0460):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_take_profits")]])
+        )
+        return TAKE_PROFITS
+    elif back_action == "back_to_take_profits":
+        tps = user_data[user_id].get('take_profits', [])
+        
+        await query.edit_message_text(
+            f"✅ *Тейк-профиты:* {', '.join(map(str, tps))}\n\n"
+            f"📊 *Введите распределение объемов в % для каждого тейк-профита через запятую*\n"
+            f"(всего {len(tps)} значений, сумма должна быть 100%):\n"
+            f"*Пример:* 50, 30, 20",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_volume_distribution")]])
+        )
+        return VOLUME_DISTRIBUTION
+    
+    # Если действие не распознано, возвращаем в главное меню
+    return await start(update, context)
 
 # Обработчики для быстрого расчета
 @log_performance
@@ -1302,15 +1370,6 @@ async def new_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         await start(update, context)
 
-# Функция для запуска периодической очистки через job queue
-async def start_periodic_cleanup(application: Application):
-    """Запуск периодической очистки через job queue"""
-    async def cleanup_job(context: ContextTypes.DEFAULT_TYPE):
-        await cleanup_old_data()
-    
-    # Запускаем задачу каждые 30 минут
-    application.job_queue.run_repeating(cleanup_job, interval=1800, first=10)
-
 def main():
     """Исправленная основная функция для запуска бота"""
     token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -1330,27 +1389,53 @@ def main():
             CommandHandler('quick', quick_command),
             CommandHandler('portfolio', portfolio_command),
             CommandHandler('analytics', analytics_command),
-            CommandHandler('info', pro_info_command)
+            CommandHandler('info', pro_info_command),
+            CallbackQueryHandler(handle_main_menu, pattern='^(pro_calculation|quick_calculation|portfolio|analytics|pro_info|main_menu)$')
         ],
         states={
             MAIN_MENU: [CallbackQueryHandler(handle_main_menu, pattern='^(pro_calculation|quick_calculation|portfolio|analytics|pro_info|main_menu)$')],
             INSTRUMENT_TYPE: [CallbackQueryHandler(process_instrument_type, pattern='^inst_type_')],
             CUSTOM_INSTRUMENT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_currency_input),
-                CallbackQueryHandler(process_currency_selection, pattern='^(back_to_instruments|custom_instrument)')
+                CallbackQueryHandler(process_currency_selection, pattern='^(currency_|custom_instrument)'),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_instruments$')
             ],
-            CURRENCY: [CallbackQueryHandler(process_currency_selection, pattern='^(currency_|back_to_instruments|custom_instrument)')],
-            DIRECTION: [CallbackQueryHandler(process_direction, pattern='^(direction_|back_to_instruments)')],
-            RISK_PERCENT: [CallbackQueryHandler(process_risk_percent, pattern='^(risk_|back_to_direction|back_to_risk)')],
+            CURRENCY: [
+                CallbackQueryHandler(process_currency_selection, pattern='^(currency_|custom_instrument)'),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_instruments$')
+            ],
+            DIRECTION: [
+                CallbackQueryHandler(process_direction, pattern='^direction_'),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_instruments$')
+            ],
+            RISK_PERCENT: [
+                CallbackQueryHandler(process_risk_percent, pattern='^risk_'),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_direction$')
+            ],
             DEPOSIT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_deposit),
-                CallbackQueryHandler(process_risk_percent_back, pattern='^back_to_deposit$')
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_deposit$')
             ],
-            LEVERAGE: [CallbackQueryHandler(process_leverage, pattern='^(leverage_|back_to_deposit)')],
-            ENTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_entry)],
-            STOP_LOSS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_stop_loss)],
-            TAKE_PROFITS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_take_profits)],
-            VOLUME_DISTRIBUTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_volume_distribution)],
+            LEVERAGE: [
+                CallbackQueryHandler(process_leverage, pattern='^leverage_'),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_deposit$')
+            ],
+            ENTRY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_entry),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_entry$')
+            ],
+            STOP_LOSS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_stop_loss),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_stop_loss$')
+            ],
+            TAKE_PROFITS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_take_profits),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_take_profits$')
+            ],
+            VOLUME_DISTRIBUTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_volume_distribution),
+                CallbackQueryHandler(handle_back_buttons, pattern='^back_to_volume_distribution$')
+            ],
         },
         fallbacks=[CommandHandler('cancel', cancel)]
     )
@@ -1359,6 +1444,7 @@ def main():
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(save_preset, pattern='^save_preset$'))
     application.add_handler(CallbackQueryHandler(new_calculation, pattern='^new_calculation$'))
+    application.add_handler(CallbackQueryHandler(handle_back_buttons, pattern='^back_to_'))
 
     # Получаем URL для вебхука
     webhook_url = os.getenv('RENDER_EXTERNAL_URL', '')
@@ -1366,13 +1452,10 @@ def main():
     # Запускаем вебхук или polling
     port = int(os.environ.get('PORT', 10000))
     
-    logger.info(f"🌐 PRO Запуск вебхука на порту {port}")
-    
-    # Запускаем периодическую очистку после запуска приложения
-    application.post_init = start_periodic_cleanup
+    logger.info(f"🌐 PRO Запуск на порту {port}")
     
     try:
-        if webhook_url:
+        if webhook_url and "render.com" in webhook_url:
             logger.info(f"🔗 PRO Webhook URL: {webhook_url}/webhook")
             application.run_webhook(
                 listen="0.0.0.0",
@@ -1385,8 +1468,8 @@ def main():
             application.run_polling()
     except Exception as e:
         logger.error(f"❌ Ошибка при запуске PRO бота: {e}")
-        logger.info("🔄 PRO Попытка запуска с polling...")
-        application.run_polling()
+        import traceback
+        logger.error(traceback.format_exc())
 
 if __name__ == '__main__':
     main()
