@@ -304,8 +304,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Главное меню"""
     if update.message:
         user = update.message.from_user
-    else:
+    elif update.callback_query:
         user = update.callback_query.from_user
+    else:
+        return ConversationHandler.END
         
     user_name = user.first_name or "Трейдер"
     
@@ -318,9 +320,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 """
     
     user_id = user.id
+    # Сохраняем пресеты при перезапуске
+    old_presets = user_data.get(user_id, {}).get('presets', [])
+    
     user_data[user_id] = {
         'start_time': datetime.now().isoformat(),
-        'last_activity': time.time()
+        'last_activity': time.time(),
+        'presets': old_presets
     }
     
     keyboard = [
@@ -481,6 +487,7 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 `/portfolio` - Управление портфелем
 `/analytics` - Аналитика стратегий
 `/info` - PRO инструкция
+`/presets` - Мои стратегии
 
 👨‍💻 *РАЗРАБОТЧИК:* [@fxfeelgood](https://t.me/fxfeelgood)
 
@@ -1290,9 +1297,19 @@ async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(user_data[uid]['presets']) >= 20:
         user_data[uid]['presets'] = user_data[uid]['presets'][-19:]
     
+    # Сохраняем только ключи стратегии
+    strategy_data = {}
+    keys_to_save = ['instrument_type', 'currency', 'direction', 'risk_percent', 
+                   'deposit', 'leverage', 'entry', 'stop_loss', 'take_profits', 
+                   'volume_distribution']
+    
+    for key in keys_to_save:
+        if key in user_data[uid]:
+            strategy_data[key] = user_data[uid][key]
+    
     user_data[uid]['presets'].append({
         'timestamp': datetime.now().isoformat(),
-        'data': user_data[uid].copy()
+        'data': strategy_data
     })
     
     await query.edit_message_text(
@@ -1307,23 +1324,22 @@ async def save_preset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @log_performance
 async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать сохраненные пресеты"""
-    if not update.message:
-        return
-        
-    uid = update.message.from_user.id
-    presets = user_data.get(uid, {}).get('presets', [])
+    user_id = update.message.from_user.id
+    presets = user_data.get(user_id, {}).get('presets', [])
     
     if not presets:
         await update.message.reply_text(
             "📝 *У вас нет сохраненных PRO стратегий.*\n\n"
             "💡 Сохраняйте свои стратегии после расчета для быстрого доступа!",
-            parse_mode='Markdown'
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
         )
         return
     
     await update.message.reply_text(
         f"📚 *Ваши PRO стратегии ({len(presets)}):*",
-        parse_mode='Markdown'
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
     )
     
     for i, p in enumerate(presets[-10:], 1):
@@ -1390,6 +1406,7 @@ def main():
             CommandHandler('portfolio', portfolio_command),
             CommandHandler('analytics', analytics_command),
             CommandHandler('info', pro_info_command),
+            CommandHandler('presets', show_presets),
             CallbackQueryHandler(handle_main_menu, pattern='^(pro_calculation|quick_calculation|portfolio|analytics|pro_info|main_menu)$')
         ],
         states={
@@ -1437,14 +1454,26 @@ def main():
                 CallbackQueryHandler(handle_back_buttons, pattern='^back_to_volume_distribution$')
             ],
         },
-        fallbacks=[CommandHandler('cancel', cancel)]
+        fallbacks=[
+            CommandHandler('cancel', cancel),
+            CommandHandler('start', start),
+            CommandHandler('presets', show_presets)
+        ]
     )
 
-    # Добавляем обработчики
+    # Добавляем обработчики в правильном порядке
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(save_preset, pattern='^save_preset$'))
     application.add_handler(CallbackQueryHandler(new_calculation, pattern='^new_calculation$'))
     application.add_handler(CallbackQueryHandler(handle_back_buttons, pattern='^back_to_'))
+
+    # Добавляем глобальные обработчики команд
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('presets', show_presets))
+    application.add_handler(CommandHandler('portfolio', portfolio_command))
+    application.add_handler(CommandHandler('analytics', analytics_command))
+    application.add_handler(CommandHandler('info', pro_info_command))
+    application.add_handler(CommandHandler('quick', quick_command))
 
     # Получаем URL для вебхука
     webhook_url = os.getenv('RENDER_EXTERNAL_URL', '')
