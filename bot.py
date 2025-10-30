@@ -45,8 +45,8 @@ class PortfolioManager:
         
         if 'portfolio' not in user_data[user_id]:
             user_data[user_id]['portfolio'] = {
-                'initial_balance': 0,
-                'current_balance': 0,
+                'initial_balance': 10000,
+                'current_balance': 10000,
                 'trades': [],
                 'performance': {
                     'total_trades': 0,
@@ -218,7 +218,7 @@ class AnalyticsEngine:
         
         return recommendations
 
-# Ultra-fast cache manager (existing)
+# Ultra-fast cache manager
 class FastCache:
     def __init__(self, max_size=500, ttl=300):
         self.cache = {}
@@ -242,7 +242,7 @@ class FastCache:
 # Global cache
 fast_cache = FastCache()
 
-# Constants (existing)
+# Constants
 INSTRUMENT_TYPES = {
     'forex': 'Forex',
     'crypto': 'Криптовалюты', 
@@ -252,7 +252,33 @@ INSTRUMENT_TYPES = {
 }
 
 PIP_VALUES = {
-    # ... (existing PIP_VALUES dictionary)
+    # Forex - major pairs
+    'EURUSD': 10, 'GBPUSD': 10, 'USDJPY': 9, 'USDCHF': 10,
+    'USDCAD': 10, 'AUDUSD': 10, 'NZDUSD': 10, 'EURGBP': 10,
+    'EURJPY': 9, 'GBPJPY': 9, 'EURCHF': 10, 'AUDJPY': 9,
+    'NZDJPY': 9, 'CADJPY': 9, 'CHFJPY': 9, 'GBPCAD': 10,
+    'GBPAUD': 10, 'GBPNZD': 10, 'EURAUD': 10, 'EURCAD': 10,
+    'EURNZD': 10, 'AUDCAD': 10, 'AUDCHF': 10, 'AUDNZD': 10,
+    'CADCHF': 10, 'NZDCAD': 10, 'NZDCHF': 10,
+    # Forex - exotic pairs
+    'USDSEK': 10, 'USDDKK': 10, 'USDNOK': 10, 'USDPLN': 10,
+    'USDCZK': 10, 'USDHUF': 10, 'USDRON': 10, 'USDTRY': 10,
+    'USDZAR': 10, 'USDMXN': 10, 'USDSGD': 10, 'USDHKD': 10,
+    # Cryptocurrencies
+    'BTCUSD': 1, 'ETHUSD': 1, 'XRPUSD': 10, 'ADAUSD': 10,
+    'DOTUSD': 1, 'LTCUSD': 1, 'BCHUSD': 1, 'LINKUSD': 1,
+    'BNBUSD': 1, 'SOLUSD': 1, 'DOGEUSD': 10, 'MATICUSD': 10,
+    'AVAXUSD': 1, 'ATOMUSD': 1, 'UNIUSD': 1, 'XLMUSD': 10,
+    # Indices
+    'US30': 1, 'NAS100': 1, 'SPX500': 1, 'DAX40': 1,
+    'FTSE100': 1, 'NIKKEI225': 1, 'ASX200': 1, 'CAC40': 1,
+    'ESTX50': 1, 'HSI': 1, 'SENSEX': 1, 'IBOVESPA': 1,
+    # Commodities
+    'OIL': 10, 'NATGAS': 10, 'COPPER': 10, 'WHEAT': 10,
+    'CORN': 10, 'SOYBEAN': 10, 'SUGAR': 10, 'COFFEE': 10,
+    # Metals
+    'XAUUSD': 10, 'XAGUSD': 50, 'XPTUSD': 10, 'XPDUSD': 10,
+    'XAUAUD': 10, 'XAUEUR': 10, 'XAGGBP': 50
 }
 
 CONTRACT_SIZES = {
@@ -267,12 +293,150 @@ LEVERAGES = ['1:10', '1:20', '1:50', '1:100', '1:200', '1:500', '1:1000']
 RISK_LEVELS = ['2%', '5%', '10%', '15%', '20%', '25%']
 TRADE_DIRECTIONS = ['BUY', 'SELL']
 
-# Ultra-fast risk calculator (existing)
+# Ultra-fast risk calculator
 class FastRiskCalculator:
-    # ... (existing FastRiskCalculator implementation)
-    pass
+    """Optimized risk calculator with simplified calculations"""
+    
+    @staticmethod
+    def calculate_pip_value_fast(instrument_type: str, currency_pair: str, lot_size: float) -> float:
+        """Fast pip value calculation"""
+        base_pip_value = PIP_VALUES.get(currency_pair, 10)
+        
+        if instrument_type == 'crypto':
+            return base_pip_value * lot_size * 0.1
+        elif instrument_type == 'indices':
+            return base_pip_value * lot_size * 0.01
+        else:
+            return base_pip_value * lot_size
 
-# Performance logging decorator (existing)
+    @staticmethod
+    def calculate_position_size_fast(
+        deposit: float,
+        leverage: str,
+        instrument_type: str,
+        currency_pair: str,
+        entry_price: float,
+        stop_loss: float,
+        direction: str,
+        risk_percent: float = 0.02
+    ) -> Dict[str, float]:
+        """Ultra-fast position size calculation"""
+        try:
+            # Fast cache key
+            cache_key = f"pos_{deposit}_{leverage}_{instrument_type}_{currency_pair}_{entry_price}_{stop_loss}_{direction}_{risk_percent}"
+            cached_result = fast_cache.get(cache_key)
+            if cached_result:
+                return cached_result
+            
+            lev_value = int(leverage.split(':')[1])
+            risk_amount = deposit * risk_percent
+            
+            # Fast stop loss calculations
+            if instrument_type == 'forex':
+                stop_pips = abs(entry_price - stop_loss) * 10000
+            elif instrument_type == 'crypto':
+                stop_pips = abs(entry_price - stop_loss) * 100
+            elif instrument_type in ['indices', 'commodities', 'metals']:
+                stop_pips = abs(entry_price - stop_loss) * 10
+            else:
+                stop_pips = abs(entry_price - stop_loss) * 10000
+
+            pip_value_per_lot = FastRiskCalculator.calculate_pip_value_fast(
+                instrument_type, currency_pair, 1.0
+            )
+            
+            if stop_pips > 0 and pip_value_per_lot > 0:
+                max_lots_by_risk = risk_amount / (stop_pips * pip_value_per_lot)
+            else:
+                max_lots_by_risk = 0
+            
+            contract_size = CONTRACT_SIZES.get(instrument_type, 100000)
+            if entry_price > 0:
+                max_lots_by_margin = (deposit * lev_value) / (contract_size * entry_price)
+            else:
+                max_lots_by_margin = 0
+            
+            position_size = min(max_lots_by_risk, max_lots_by_margin, 50.0)
+            
+            if position_size < 0.01:
+                position_size = 0.01
+            else:
+                position_size = round(position_size * 100) / 100
+                
+            required_margin = (position_size * contract_size * entry_price) / lev_value if lev_value > 0 else 0
+            
+            result = {
+                'position_size': position_size,
+                'risk_amount': risk_amount,
+                'stop_pips': stop_pips,
+                'required_margin': required_margin,
+                'risk_percent': (risk_amount / deposit) * 100 if deposit > 0 else 0,
+                'free_margin': deposit - required_margin
+            }
+            
+            # Save to cache
+            fast_cache.set(cache_key, result)
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in fast position size calculation: {e}")
+            return {
+                'position_size': 0.01,
+                'risk_amount': 0,
+                'stop_pips': 0,
+                'required_margin': 0,
+                'risk_percent': 0,
+                'free_margin': deposit
+            }
+
+    @staticmethod
+    def calculate_profits_fast(
+        instrument_type: str,
+        currency_pair: str,
+        entry_price: float,
+        take_profits: List[float],
+        position_size: float,
+        volume_distribution: List[float],
+        direction: str
+    ) -> List[Dict[str, Any]]:
+        """Fast profit calculation"""
+        profits = []
+        total_profit = 0
+        
+        for i, (tp, vol_pct) in enumerate(zip(take_profits, volume_distribution)):
+            if instrument_type == 'forex':
+                tp_pips = abs(entry_price - tp) * 10000
+            elif instrument_type == 'crypto':
+                tp_pips = abs(entry_price - tp) * 100
+            elif instrument_type in ['indices', 'commodities', 'metals']:
+                tp_pips = abs(entry_price - tp) * 10
+            else:
+                tp_pips = abs(entry_price - tp) * 10000
+                
+            volume_lots = position_size * (vol_pct / 100)
+            pip_value = FastRiskCalculator.calculate_pip_value_fast(
+                instrument_type, currency_pair, volume_lots
+            )
+            profit = tp_pips * pip_value
+            total_profit += profit
+            
+            contract_size = CONTRACT_SIZES.get(instrument_type, 100000)
+            position_value = position_size * contract_size * entry_price
+            
+            profits.append({
+                'level': i + 1,
+                'price': tp,
+                'volume_percent': vol_pct,
+                'volume_lots': volume_lots,
+                'profit': profit,
+                'cumulative_profit': total_profit,
+                'pips': tp_pips,
+                'roi_percent': (profit / position_value) * 100 if position_value > 0 else 0
+            })
+            
+        return profits
+
+# Performance logging decorator
 def log_performance(func):
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
@@ -284,7 +448,64 @@ def log_performance(func):
         return result
     return wrapper
 
-# Enhanced Portfolio Management
+# Main command handlers
+@log_performance
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Main menu"""
+    if update.message:
+        user = update.message.from_user
+    elif update.callback_query:
+        user = update.callback_query.from_user
+    else:
+        return ConversationHandler.END
+        
+    user_name = user.first_name or "Трейдер"
+    
+    welcome_text = f"""
+👋 *Привет, {user_name}!*
+
+🎯 *PRO Калькулятор Риск-Менеджмента v3.0*
+
+⚡ *Выберите опцию:*
+"""
+    
+    user_id = user.id
+    # Preserve presets on restart
+    old_presets = user_data.get(user_id, {}).get('presets', [])
+    
+    user_data[user_id] = {
+        'start_time': datetime.now().isoformat(),
+        'last_activity': time.time(),
+        'presets': old_presets
+    }
+    
+    keyboard = [
+        [InlineKeyboardButton("📊 Профессиональный расчет", callback_data="pro_calculation")],
+        [InlineKeyboardButton("⚡ Быстрый расчет", callback_data="quick_calculation")],
+        [InlineKeyboardButton("💼 Мой портфель", callback_data="portfolio")],
+        [InlineKeyboardButton("📈 Аналитика", callback_data="analytics")],
+        [InlineKeyboardButton("📚 PRO Инструкции", callback_data="pro_info")]
+    ]
+    
+    if update.message:
+        await update.message.reply_text(
+            welcome_text, 
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            welcome_text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    return MAIN_MENU
+
+@log_performance
+async def quick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Quick calculation"""
+    return await start_quick_calculation(update, context)
+
 @log_performance
 async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Enhanced Portfolio Management"""
@@ -329,6 +550,102 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
     return PORTFOLIO_MENU
 
+@log_performance
+async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Enhanced Strategy Analytics"""
+    user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
+    
+    analytics_text = """
+📈 *Аналитика Стратегий*
+
+📊 *Доступная аналитика:*
+• 📈 Анализ риск/вознаграждение
+• 💹 Эффективность стратегий
+• 📊 Статистика сделок
+• 🔄 Оптимизация параметров
+
+🚀 *Скоро появится:*
+• 🤖 AI-анализ стратегий
+• 📊 Бэктестинг
+• 📈 Прогнозирование
+• 💡 Интеллектуальные рекомендации
+
+Выберите тип анализа:
+"""
+    
+    keyboard = [
+        [InlineKeyboardButton("📈 Анализ риск/вознаграждение", callback_data="analytics_risk_reward")],
+        [InlineKeyboardButton("💹 Эффективность стратегий", callback_data="analytics_strategy_perf")],
+        [InlineKeyboardButton("📊 Статистика сделок", callback_data="analytics_trade_stats")],
+        [InlineKeyboardButton("🔄 Оптимизация параметров", callback_data="analytics_optimization")],
+        [InlineKeyboardButton("💡 Рекомендации", callback_data="analytics_recommendations")],
+        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+    ]
+    
+    if update.message:
+        await update.message.reply_text(
+            analytics_text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            analytics_text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    return ANALYTICS_MENU
+
+@log_performance
+async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """PRO Instructions"""
+    info_text = """
+📚 *PRO ИНСТРУКЦИИ v3.0*
+
+🎯 *РАСШИРЕННЫЕ ВОЗМОЖНОСТИ:*
+
+⚡ *ВСЕ ТИПЫ ИНСТРУМЕНТОВ:*
+• 🌐 Forex (50+ валютных пар)
+• ₿ Криптовалюты (15+ пар)
+• 📈 Индексы (12+ индексов)
+• ⚡ Товары (8+ типов)
+• 🏅 Металлы (6+ типов)
+
+📋 *КАК ИСПОЛЬЗОВАТЬ:*
+
+*Профессиональный расчет:*
+1. Выберите тип инструмента
+2. Выберите конкретный инструмент или введите свой
+3. Укажите направление сделки (BUY/SELL)
+4. Выберите уровень риска
+5. Введите основные параметры
+6. Получите детальный анализ
+
+*Быстрый расчет:*
+1. Введите инструмент
+2. Укажите базовые параметры
+3. Получите мгновенный результат
+
+👨‍💻 *РАЗРАБОТЧИК:* [@fxfeelgood](https://t.me/fxfeelgood)
+
+*PRO v3.0 | Быстро • Умно • Точно* 🚀
+"""
+    if update.message:
+        await update.message.reply_text(
+            info_text, 
+            parse_mode='Markdown', 
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            info_text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+        )
+
+# Portfolio handlers
 @log_performance
 async def portfolio_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Display trade overview"""
@@ -396,7 +713,7 @@ async def portfolio_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     balance_text += f"💳 Начальный депозит: ${initial_balance:,.2f}\n"
     balance_text += f"💵 Текущий баланс: ${current_balance:,.2f}\n"
-    balance_text += f"📈 Чистая прибыль: ${net_profit:,.2f}\n\n"
+    balance_text += f"📈 Чистая прибыль: ${net_profit:.2f}\n\n"
     
     # Allocation information
     if allocation:
@@ -565,53 +882,7 @@ async def portfolio_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
     )
 
-# Enhanced Analytics System
-@log_performance
-async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Enhanced Strategy Analytics"""
-    user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
-    
-    analytics_text = """
-📈 *Аналитика Стратегий*
-
-📊 *Доступная аналитика:*
-• 📈 Анализ риск/вознаграждение
-• 💹 Эффективность стратегий
-• 📊 Статистика сделок
-• 🔄 Оптимизация параметров
-
-🚀 *Скоро появится:*
-• 🤖 AI-анализ стратегий
-• 📊 Бэктестинг
-• 📈 Прогнозирование
-• 💡 Интеллектуальные рекомендации
-
-Выберите тип анализа:
-"""
-    
-    keyboard = [
-        [InlineKeyboardButton("📈 Анализ риск/вознаграждение", callback_data="analytics_risk_reward")],
-        [InlineKeyboardButton("💹 Эффективность стратегий", callback_data="analytics_strategy_perf")],
-        [InlineKeyboardButton("📊 Статистика сделок", callback_data="analytics_trade_stats")],
-        [InlineKeyboardButton("🔄 Оптимизация параметров", callback_data="analytics_optimization")],
-        [InlineKeyboardButton("💡 Рекомендации", callback_data="analytics_recommendations")],
-        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-    ]
-    
-    if update.message:
-        await update.message.reply_text(
-            analytics_text,
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    else:
-        await update.callback_query.edit_message_text(
-            analytics_text,
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    return ANALYTICS_MENU
-
+# Analytics handlers
 @log_performance
 async def analytics_risk_reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Risk/Reward Analysis"""
@@ -740,7 +1011,7 @@ async def analytics_optimization(update: Update, context: ContextTypes.DEFAULT_T
     opt_text += "• Тестируйте стратегии на исторических данных\n"
     opt_text += "• Используйте разные таймфреймы\n"
     opt_text += "• Анализируйте результаты еженедельно\n"
-    opt_text += "• Корректируйте параметры based on performance\n"
+    opt_text += "• Корректируйте параметры на основе производительности\n"
     
     await query.edit_message_text(
         opt_text,
@@ -784,7 +1055,7 @@ async def analytics_recommendations(update: Update, context: ContextTypes.DEFAUL
         ])
     )
 
-# Navigation handlers for portfolio and analytics
+# Navigation handlers
 @log_performance
 async def portfolio_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Back to portfolio menu"""
@@ -795,7 +1066,7 @@ async def analytics_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Back to analytics menu"""
     return await analytics_command(update, context)
 
-# Update main menu handler to include new functionality
+# Main menu handlers
 @log_performance
 async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle main menu selection"""
@@ -831,7 +1102,192 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     return MAIN_MENU
 
-# Update ConversationHandler states to include new functionality
+# Basic calculation handlers (simplified for demo)
+@log_performance
+async def start_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start professional calculation"""
+    query = update.callback_query
+    if query:
+        await query.edit_message_text(
+            "🎯 *Профессиональный расчет*\n\n"
+            "📊 *Выберите тип инструмента:*",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🌐 Forex", callback_data="inst_type_forex")],
+                [InlineKeyboardButton("₿ Криптовалюты", callback_data="inst_type_crypto")],
+                [InlineKeyboardButton("📈 Индексы", callback_data="inst_type_indices")],
+                [InlineKeyboardButton("⚡ Товары", callback_data="inst_type_commodities")],
+                [InlineKeyboardButton("🏅 Металлы", callback_data="inst_type_metals")],
+                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+            ])
+        )
+    return INSTRUMENT_TYPE
+
+@log_performance
+async def start_quick_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start quick calculation"""
+    if update.message:
+        await update.message.reply_text(
+            "⚡ *Быстрый расчет*\n\n"
+            "📊 *Введите тикер инструмента* (например: EURUSD, BTCUSD, NAS100):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+            ])
+        )
+    else:
+        query = update.callback_query
+        await query.edit_message_text(
+            "⚡ *Быстрый расчет*\n\n"
+            "📊 *Введите тикер инструмента* (например: EURUSD, BTCUSD, NAS100):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+            ])
+        )
+    return CUSTOM_INSTRUMENT
+
+# Additional required handlers
+@log_performance
+async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show saved presets"""
+    user_id = update.message.from_user.id
+    presets = user_data.get(user_id, {}).get('presets', [])
+    
+    if not presets:
+        await update.message.reply_text(
+            "📝 *У вас нет сохраненных PRO стратегий.*\n\n"
+            "💡 Сохраняйте ваши стратегии после расчета для быстрого доступа!",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+        )
+        return
+    
+    await update.message.reply_text(
+        f"📚 *Ваши PRO стратегии ({len(presets)}):*",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+    )
+
+@log_performance
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancel conversation"""
+    if update.message:
+        await update.message.reply_text(
+            "❌ *PRO расчет отменен.*\n\n"
+            "🚀 Используйте /start для нового PRO расчета\n"
+            "📚 Используйте /info для PRO инструкций\n\n"
+            "👨‍💻 *PRO Разработчик:* [@fxfeelgood](https://t.me/fxfeelgood)",
+            parse_mode='Markdown',
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+            ])
+        )
+    return ConversationHandler.END
+
+# Simplified handlers for calculation flow
+@log_performance
+async def process_instrument_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process instrument type selection"""
+    query = update.callback_query
+    if not query:
+        return INSTRUMENT_TYPE
+        
+    await query.answer()
+    user_id = query.from_user.id
+    instrument_type = query.data.replace('inst_type_', '')
+    user_data[user_id]['instrument_type'] = instrument_type
+    user_data[user_id]['last_activity'] = time.time()
+    
+    # For demo, show a simple message
+    display_type = INSTRUMENT_TYPES.get(instrument_type, instrument_type)
+    await query.edit_message_text(
+        f"✅ *Тип инструмента:* {display_type}\n\n"
+        "Эта функция находится в разработке. Используйте Быстрый расчет для демонстрации.",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚡ Быстрый расчет", callback_data="quick_calculation")],
+            [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+        ])
+    )
+    return MAIN_MENU
+
+@log_performance
+async def process_currency_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process instrument ticker input for quick calculation"""
+    if not update.message:
+        return CUSTOM_INSTRUMENT
+        
+    user_id = update.message.from_user.id
+    currency = update.message.text.upper().strip()
+    
+    # Basic ticker validation
+    if not re.match(r'^[A-Z0-9]{2,10}$', currency):
+        await update.message.reply_text(
+            "❌ *Неверный формат тикера!*\n\n"
+            "Пожалуйста, введите правильный тикер (только буквы и цифры, 2-10 символов):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+            ])
+        )
+        return CUSTOM_INSTRUMENT
+    
+    # For demo, show calculation result
+    user_data[user_id] = {
+        'currency': currency,
+        'instrument_type': 'forex',
+        'direction': 'BUY',
+        'risk_percent': 0.02,
+        'deposit': 10000,
+        'leverage': '1:100',
+        'entry': 1.0850,
+        'stop_loss': 1.0800,
+        'take_profits': [1.0900, 1.0950],
+        'volume_distribution': [70, 30]
+    }
+    
+    # Perform calculation
+    pos = FastRiskCalculator.calculate_position_size_fast(
+        deposit=10000,
+        leverage='1:100',
+        instrument_type='forex',
+        currency_pair=currency,
+        entry_price=1.0850,
+        stop_loss=1.0800,
+        direction='BUY'
+    )
+    
+    result_text = f"""
+🎯 *РЕЗУЛЬТАТ БЫСТРОГО РАСЧЕТА*
+
+📊 *Основные параметры:*
+🌐 Инструмент: {currency}
+💵 Депозит: $10,000
+⚖️ Плечо: 1:100
+📈 Вход: 1.0850
+🛑 Стоп-лосс: 1.0800
+
+⚠️ *Управление рисками:*
+📦 Размер позиции: *{pos['position_size']:.2f} лотов*
+💰 Риск на сделку: ${pos['risk_amount']:.2f}
+📉 Стоп-лосс: {pos['stop_pips']:.0f} пунктов
+
+💡 *Рекомендация:* Используйте профессиональный расчет для детального анализа
+"""
+    
+    await update.message.reply_text(
+        result_text,
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📊 Профессиональный расчет", callback_data="pro_calculation")],
+            [InlineKeyboardButton("💼 Добавить в портфель", callback_data="portfolio_add_trade")],
+            [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+        ])
+    )
+    return MAIN_MENU
+
 def main():
     """Optimized main function to run bot"""
     token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -853,10 +1309,18 @@ def main():
             CommandHandler('analytics', analytics_command),
             CommandHandler('info', pro_info_command),
             CommandHandler('presets', show_presets),
-            CallbackQueryHandler(handle_main_menu, pattern='^(pro_calculation|quick_calculation|portfolio|analytics|pro_info|main_menu|portfolio_back|analytics_back)$')
+            CallbackQueryHandler(handle_main_menu, pattern='^(pro_calculation|quick_calculation|portfolio|analytics|pro_info|main_menu)$')
         ],
         states={
-            MAIN_MENU: [CallbackQueryHandler(handle_main_menu, pattern='^(pro_calculation|quick_calculation|portfolio|analytics|pro_info|main_menu|portfolio_back|analytics_back)$')],
+            MAIN_MENU: [
+                CallbackQueryHandler(handle_main_menu, pattern='^(pro_calculation|quick_calculation|portfolio|analytics|pro_info|main_menu|portfolio_back|analytics_back)$')
+            ],
+            INSTRUMENT_TYPE: [
+                CallbackQueryHandler(process_instrument_type, pattern='^inst_type_')
+            ],
+            CUSTOM_INSTRUMENT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_currency_input)
+            ],
             PORTFOLIO_MENU: [
                 CallbackQueryHandler(portfolio_trades, pattern='^portfolio_trades$'),
                 CallbackQueryHandler(portfolio_balance, pattern='^portfolio_balance$'),
@@ -876,19 +1340,19 @@ def main():
                 CallbackQueryHandler(handle_main_menu, pattern='^main_menu$'),
                 CallbackQueryHandler(analytics_back, pattern='^analytics_back$')
             ],
-            # ... (rest of existing states)
         },
         fallbacks=[
             CommandHandler('cancel', cancel),
             CommandHandler('start', start),
             CommandHandler('presets', show_presets)
-        ]
+        ],
+        allow_reentry=True
     )
 
-    # Add handlers in correct order
+    # Add handlers
     application.add_handler(conv_handler)
     
-    # Add portfolio and analytics specific handlers
+    # Add individual callback handlers
     application.add_handler(CallbackQueryHandler(portfolio_trades, pattern='^portfolio_trades$'))
     application.add_handler(CallbackQueryHandler(portfolio_balance, pattern='^portfolio_balance$'))
     application.add_handler(CallbackQueryHandler(portfolio_performance, pattern='^portfolio_performance$'))
@@ -902,13 +1366,9 @@ def main():
     application.add_handler(CallbackQueryHandler(analytics_optimization, pattern='^analytics_optimization$'))
     application.add_handler(CallbackQueryHandler(analytics_recommendations, pattern='^analytics_recommendations$'))
 
-    # ... (rest of existing handler additions)
-
-    # Get webhook URL
-    webhook_url = os.getenv('RENDER_EXTERNAL_URL', '')
-    
-    # Start webhook or polling
+    # Start bot
     port = int(os.environ.get('PORT', 10000))
+    webhook_url = os.getenv('RENDER_EXTERNAL_URL', '')
     
     logger.info(f"🌐 PRO Starting on port {port}")
     
