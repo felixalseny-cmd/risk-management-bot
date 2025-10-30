@@ -251,6 +251,15 @@ INSTRUMENT_TYPES = {
     'metals': 'Металлы'
 }
 
+# Instrument presets for each type
+INSTRUMENT_PRESETS = {
+    'forex': ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCAD', 'AUDUSD', 'NZDUSD', 'EURGBP'],
+    'crypto': ['BTCUSD', 'ETHUSD', 'XRPUSD', 'ADAUSD', 'SOLUSD', 'DOTUSD'],
+    'indices': ['US30', 'NAS100', 'SPX500', 'DAX40', 'FTSE100'],
+    'commodities': ['OIL', 'NATGAS', 'COPPER', 'GOLD'],
+    'metals': ['XAUUSD', 'XAGUSD', 'XPTUSD']
+}
+
 PIP_VALUES = {
     # Forex - major pairs
     'EURUSD': 10, 'GBPUSD': 10, 'USDJPY': 9, 'USDCHF': 10,
@@ -1038,7 +1047,7 @@ async def analytics_recommendations(update: Update, context: ContextTypes.DEFAUL
             rec_text += f"{i}. {rec}\n"
     else:
         rec_text += "✅ Ваша текущая стратегия показывает хорошие результаты!\n"
-        rec_text += "Рекомендуется продолжать текущий подход.\n\n"
+        rec_text += "Мы рекомендуем продолжать ваш текущий подход.\n\n"
     
     rec_text += "\n🚀 *Скоро появится:*\n"
     rec_text += "• 🤖 AI-анализ ваших стратегий\n"
@@ -1102,7 +1111,7 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     return MAIN_MENU
 
-# Basic calculation handlers (simplified for demo)
+# Professional calculation handlers - ACTIVATED
 @log_performance
 async def start_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start professional calculation"""
@@ -1186,10 +1195,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
     return ConversationHandler.END
 
-# Simplified handlers for calculation flow
+# Professional calculation flow - ACTIVATED
 @log_performance
 async def process_instrument_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process instrument type selection"""
+    """Process instrument type selection - ACTIVATED"""
     query = update.callback_query
     if not query:
         return INSTRUMENT_TYPE
@@ -1200,19 +1209,730 @@ async def process_instrument_type(update: Update, context: ContextTypes.DEFAULT_
     user_data[user_id]['instrument_type'] = instrument_type
     user_data[user_id]['last_activity'] = time.time()
     
-    # For demo, show a simple message
     display_type = INSTRUMENT_TYPES.get(instrument_type, instrument_type)
+    
+    # Create keyboard with instrument presets
+    keyboard = []
+    presets = INSTRUMENT_PRESETS.get(instrument_type, [])
+    
+    # Add preset buttons in rows of 2
+    for i in range(0, len(presets), 2):
+        row = []
+        if i < len(presets):
+            row.append(InlineKeyboardButton(presets[i], callback_data=f"currency_{presets[i]}"))
+        if i + 1 < len(presets):
+            row.append(InlineKeyboardButton(presets[i + 1], callback_data=f"currency_{presets[i + 1]}"))
+        keyboard.append(row)
+    
+    # Add custom input and back buttons
+    keyboard.append([InlineKeyboardButton("✏️ Ввести свой тикер", callback_data="custom_currency")])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="pro_calculation")])
+    
     await query.edit_message_text(
         f"✅ *Тип инструмента:* {display_type}\n\n"
-        "Эта функция находится в разработке. Используйте Быстрый расчет для демонстрации.",
+        "📊 *Выберите инструмент из списка или введите свой:*",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return CURRENCY
+
+@log_performance
+async def process_currency_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process currency selection from presets"""
+    query = update.callback_query
+    if not query:
+        return CURRENCY
+        
+    await query.answer()
+    user_id = query.from_user.id
+    currency = query.data.replace('currency_', '')
+    
+    user_data[user_id]['currency'] = currency
+    user_data[user_id]['last_activity'] = time.time()
+    
+    # Ask for trade direction
+    await query.edit_message_text(
+        f"✅ *Инструмент:* {currency}\n\n"
+        "🎯 *Выберите направление сделки:*",
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⚡ Быстрый расчет", callback_data="quick_calculation")],
-            [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+            [InlineKeyboardButton("📈 BUY", callback_data="direction_BUY")],
+            [InlineKeyboardButton("📉 SELL", callback_data="direction_SELL")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_instrument")]
         ])
     )
-    return MAIN_MENU
+    return DIRECTION
 
+@log_performance
+async def process_custom_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process custom currency input"""
+    query = update.callback_query
+    if not query:
+        return CURRENCY
+        
+    await query.answer()
+    
+    await query.edit_message_text(
+        "✏️ *Введите тикер инструмента* (например: EURUSD, BTCUSD, NAS100):",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_instrument")]
+        ])
+    )
+    return CUSTOM_INSTRUMENT
+
+@log_performance
+async def process_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process trade direction selection"""
+    query = update.callback_query
+    if not query:
+        return DIRECTION
+        
+    await query.answer()
+    user_id = query.from_user.id
+    direction = query.data.replace('direction_', '')
+    
+    user_data[user_id]['direction'] = direction
+    user_data[user_id]['last_activity'] = time.time()
+    
+    # Ask for risk percentage
+    keyboard = []
+    for i in range(0, len(RISK_LEVELS), 3):
+        row = []
+        for j in range(3):
+            if i + j < len(RISK_LEVELS):
+                risk = RISK_LEVELS[i + j]
+                row.append(InlineKeyboardButton(risk, callback_data=f"risk_{risk}"))
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_currency")])
+    
+    await query.edit_message_text(
+        f"✅ *Направление:* {direction}\n\n"
+        "⚠️ *Выберите уровень риска (% от депозита):*",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return RISK_PERCENT
+
+@log_performance
+async def process_risk_percent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process risk percentage selection"""
+    query = update.callback_query
+    if not query:
+        return RISK_PERCENT
+        
+    await query.answer()
+    user_id = query.from_user.id
+    risk_percent = query.data.replace('risk_', '').replace('%', '')
+    
+    user_data[user_id]['risk_percent'] = float(risk_percent) / 100
+    user_data[user_id]['last_activity'] = time.time()
+    
+    # Ask for deposit amount
+    await query.edit_message_text(
+        f"✅ *Уровень риска:* {risk_percent}%\n\n"
+        "💰 *Введите сумму депозита* (в USD):\n\n"
+        "Пример: 10000",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_direction")]
+        ])
+    )
+    return DEPOSIT
+
+@log_performance
+async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process deposit amount input"""
+    if not update.message:
+        return DEPOSIT
+        
+    user_id = update.message.from_user.id
+    deposit_text = update.message.text.strip()
+    
+    try:
+        deposit = float(deposit_text)
+        if deposit <= 0:
+            raise ValueError("Deposit must be positive")
+            
+        user_data[user_id]['deposit'] = deposit
+        user_data[user_id]['last_activity'] = time.time()
+        
+        # Ask for leverage
+        keyboard = []
+        for i in range(0, len(LEVERAGES), 3):
+            row = []
+            for j in range(3):
+                if i + j < len(LEVERAGES):
+                    leverage = LEVERAGES[i + j]
+                    row.append(InlineKeyboardButton(leverage, callback_data=f"leverage_{leverage}"))
+            keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_risk")])
+        
+        await update.message.reply_text(
+            f"✅ *Депозит:* ${deposit:,.2f}\n\n"
+            "⚖️ *Выберите кредитное плечо:*",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return LEVERAGE
+        
+    except ValueError:
+        await update.message.reply_text(
+            "❌ *Неверная сумма депозита!*\n\n"
+            "💰 Пожалуйста, введите корректную сумму (только числа):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_risk")]
+            ])
+        )
+        return DEPOSIT
+
+@log_performance
+async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process leverage selection"""
+    query = update.callback_query
+    if not query:
+        return LEVERAGE
+        
+    await query.answer()
+    user_id = query.from_user.id
+    leverage = query.data.replace('leverage_', '')
+    
+    user_data[user_id]['leverage'] = leverage
+    user_data[user_id]['last_activity'] = time.time()
+    
+    # Ask for entry price
+    currency = user_data[user_id].get('currency', 'инструмент')
+    await query.edit_message_text(
+        f"✅ *Плечо:* {leverage}\n\n"
+        f"📈 *Введите цену входа для {currency}:*\n\n"
+        "Пример: 1.0850",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_deposit")]
+        ])
+    )
+    return ENTRY
+
+@log_performance
+async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process entry price input"""
+    if not update.message:
+        return ENTRY
+        
+    user_id = update.message.from_user.id
+    entry_text = update.message.text.strip()
+    
+    try:
+        entry_price = float(entry_text)
+        if entry_price <= 0:
+            raise ValueError("Entry price must be positive")
+            
+        user_data[user_id]['entry'] = entry_price
+        user_data[user_id]['last_activity'] = time.time()
+        
+        # Ask for stop loss
+        currency = user_data[user_id].get('currency', 'инструмент')
+        await update.message.reply_text(
+            f"✅ *Цена входа:* {entry_price}\n\n"
+            f"🛑 *Введите цену стоп-лосса для {currency}:*\n\n"
+            "Пример: 1.0800",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_leverage")]
+            ])
+        )
+        return STOP_LOSS
+        
+    except ValueError:
+        await update.message.reply_text(
+            "❌ *Неверная цена входа!*\n\n"
+            "📈 Пожалуйста, введите корректную цену (только числа):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_leverage")]
+            ])
+        )
+        return ENTRY
+
+@log_performance
+async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process stop loss input"""
+    if not update.message:
+        return STOP_LOSS
+        
+    user_id = update.message.from_user.id
+    stop_loss_text = update.message.text.strip()
+    
+    try:
+        stop_loss = float(stop_loss_text)
+        entry_price = user_data[user_id].get('entry', 0)
+        
+        if stop_loss <= 0:
+            raise ValueError("Stop loss must be positive")
+            
+        # Validate stop loss relative to entry
+        direction = user_data[user_id].get('direction', 'BUY')
+        if direction == 'BUY' and stop_loss >= entry_price:
+            await update.message.reply_text(
+                "❌ *Для BUY сделки стоп-лосс должен быть ниже цены входа!*\n\n"
+                "🛑 Пожалуйста, введите корректную цену стоп-лосса:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Назад", callback_data="back_to_entry")]
+                ])
+            )
+            return STOP_LOSS
+        elif direction == 'SELL' and stop_loss <= entry_price:
+            await update.message.reply_text(
+                "❌ *Для SELL сделки стоп-лосс должен быть выше цены входа!*\n\n"
+                "🛑 Пожалуйста, введите корректную цену стоп-лосса:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Назад", callback_data="back_to_entry")]
+                ])
+            )
+            return STOP_LOSS
+            
+        user_data[user_id]['stop_loss'] = stop_loss
+        user_data[user_id]['last_activity'] = time.time()
+        
+        # Ask for take profits
+        currency = user_data[user_id].get('currency', 'инструмент')
+        await update.message.reply_text(
+            f"✅ *Стоп-лосс:* {stop_loss}\n\n"
+            f"🎯 *Введите цены тейк-профитов для {currency} (через запятую):*\n\n"
+            "Пример: 1.0900, 1.0950, 1.1000\n"
+            "Можно указать до 3 уровней",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_entry")]
+            ])
+        )
+        return TAKE_PROFITS
+        
+    except ValueError:
+        await update.message.reply_text(
+            "❌ *Неверная цена стоп-лосса!*\n\n"
+            "🛑 Пожалуйста, введите корректную цену (только числа):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_entry")]
+            ])
+        )
+        return STOP_LOSS
+
+@log_performance
+async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process take profits input"""
+    if not update.message:
+        return TAKE_PROFITS
+        
+    user_id = update.message.from_user.id
+    take_profits_text = update.message.text.strip()
+    
+    try:
+        # Parse take profits
+        tp_list = [float(tp.strip()) for tp in take_profits_text.split(',')]
+        tp_list = tp_list[:3]  # Limit to 3 take profits
+        
+        # Validate take profits relative to entry and direction
+        entry_price = user_data[user_id].get('entry', 0)
+        direction = user_data[user_id].get('direction', 'BUY')
+        
+        for tp in tp_list:
+            if direction == 'BUY' and tp <= entry_price:
+                await update.message.reply_text(
+                    "❌ *Для BUY сделки тейк-профиты должны быть выше цены входа!*\n\n"
+                    "🎯 Пожалуйста, введите корректные цены тейк-профитов:",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_stop_loss")]
+                    ])
+                )
+                return TAKE_PROFITS
+            elif direction == 'SELL' and tp >= entry_price:
+                await update.message.reply_text(
+                    "❌ *Для SELL сделки тейк-профиты должны быть ниже цены входа!*\n\n"
+                    "🎯 Пожалуйста, введите корректные цены тейк-профитов:",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_stop_loss")]
+                    ])
+                )
+                return TAKE_PROFITS
+        
+        user_data[user_id]['take_profits'] = tp_list
+        user_data[user_id]['last_activity'] = time.time()
+        
+        # Ask for volume distribution
+        await update.message.reply_text(
+            f"✅ *Тейк-профиты:* {', '.join(str(tp) for tp in tp_list)}\n\n"
+            "📊 *Введите распределение объема между тейк-профитами (% через запятую):*\n\n"
+            f"Пример для {len(tp_list)} уровней: {', '.join([str(100//len(tp_list)) for _ in tp_list])}\n"
+            "Сумма должна равняться 100%",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_stop_loss")]
+            ])
+        )
+        return VOLUME_DISTRIBUTION
+        
+    except ValueError:
+        await update.message.reply_text(
+            "❌ *Неверный формат тейк-профитов!*\n\n"
+            "🎯 Пожалуйста, введите корректные цены (только числа, через запятую):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_stop_loss")]
+            ])
+        )
+        return TAKE_PROFITS
+
+@log_performance
+async def process_volume_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process volume distribution input and show final results"""
+    if not update.message:
+        return VOLUME_DISTRIBUTION
+        
+    user_id = update.message.from_user.id
+    volume_text = update.message.text.strip()
+    
+    try:
+        # Parse volume distribution
+        volume_list = [float(vol.strip()) for vol in volume_text.split(',')]
+        take_profits = user_data[user_id].get('take_profits', [])
+        
+        if len(volume_list) != len(take_profits):
+            await update.message.reply_text(
+                f"❌ *Количество уровней распределения ({len(volume_list)}) не совпадает с количеством тейк-профитов ({len(take_profits)})!*\n\n"
+                "📊 Пожалуйста, введите корректное распределение:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Назад", callback_data="back_to_take_profits")]
+                ])
+            )
+            return VOLUME_DISTRIBUTION
+        
+        if sum(volume_list) != 100:
+            await update.message.reply_text(
+                f"❌ *Сумма распределения ({sum(volume_list)}%) не равна 100%!*\n\n"
+                "📊 Пожалуйста, введите корректное распределение:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Назад", callback_data="back_to_take_profits")]
+                ])
+            )
+            return VOLUME_DISTRIBUTION
+        
+        user_data[user_id]['volume_distribution'] = volume_list
+        user_data[user_id]['last_activity'] = time.time()
+        
+        # Perform final calculation
+        calculation_result = await perform_pro_calculation(user_id)
+        
+        await update.message.reply_text(
+            calculation_result,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💼 Добавить в портфель", callback_data="portfolio_add_trade")],
+                [InlineKeyboardButton("📊 Новый расчет", callback_data="pro_calculation")],
+                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+            ])
+        )
+        return MAIN_MENU
+        
+    except ValueError:
+        await update.message.reply_text(
+            "❌ *Неверный формат распределения!*\n\n"
+            "📊 Пожалуйста, введите корректные проценты (только числа, через запятую):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_take_profits")]
+            ])
+        )
+        return VOLUME_DISTRIBUTION
+
+@log_performance
+async def perform_pro_calculation(user_id: int) -> str:
+    """Perform professional calculation and return formatted result"""
+    user_info = user_data[user_id]
+    
+    # Extract parameters
+    instrument_type = user_info.get('instrument_type', 'forex')
+    currency = user_info.get('currency', 'EURUSD')
+    direction = user_info.get('direction', 'BUY')
+    risk_percent = user_info.get('risk_percent', 0.02)
+    deposit = user_info.get('deposit', 10000)
+    leverage = user_info.get('leverage', '1:100')
+    entry_price = user_info.get('entry', 1.0850)
+    stop_loss = user_info.get('stop_loss', 1.0800)
+    take_profits = user_info.get('take_profits', [1.0900, 1.0950])
+    volume_distribution = user_info.get('volume_distribution', [70, 30])
+    
+    # Calculate position size
+    pos_result = FastRiskCalculator.calculate_position_size_fast(
+        deposit=deposit,
+        leverage=leverage,
+        instrument_type=instrument_type,
+        currency_pair=currency,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        direction=direction,
+        risk_percent=risk_percent
+    )
+    
+    # Calculate profits
+    profits_result = FastRiskCalculator.calculate_profits_fast(
+        instrument_type=instrument_type,
+        currency_pair=currency,
+        entry_price=entry_price,
+        take_profits=take_profits,
+        position_size=pos_result['position_size'],
+        volume_distribution=volume_distribution,
+        direction=direction
+    )
+    
+    # Format result
+    result_text = f"""
+🎯 *ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ ЗАВЕРШЕН*
+
+📊 *Параметры сделки:*
+🌐 Инструмент: {currency} ({INSTRUMENT_TYPES.get(instrument_type, instrument_type)})
+🎯 Направление: {direction}
+💵 Депозит: ${deposit:,.2f}
+⚖️ Плечо: {leverage}
+📈 Вход: {entry_price}
+🛑 Стоп-лосс: {stop_loss}
+
+⚠️ *Управление рисками:*
+📦 Размер позиции: *{pos_result['position_size']:.2f} лотов*
+💰 Риск на сделку: ${pos_result['risk_amount']:.2f} ({risk_percent*100}%)
+📉 Стоп-лосс: {pos_result['stop_pips']:.0f} пунктов
+🏦 Залог: ${pos_result['required_margin']:.2f}
+💳 Свободные средства: ${pos_result['free_margin']:.2f}
+
+🎯 *Уровни тейк-профита:*
+"""
+    
+    for i, profit in enumerate(profits_result):
+        result_text += f"\n📈 Уровень {i+1}: {profit['price']}"
+        result_text += f"\n   📊 Объем: {volume_distribution[i]}% ({profit['volume_lots']:.2f} лотов)"
+        result_text += f"\n   💰 Прибыль: ${profit['profit']:.2f}"
+        result_text += f"\n   📈 Пункты: {profit['pips']:.0f}"
+        result_text += f"\n   📊 ROI: {profit['roi_percent']:.2f}%"
+    
+    result_text += f"\n\n💰 *Общая прибыль:* ${profits_result[-1]['cumulative_profit']:.2f}"
+    
+    # Risk management recommendations
+    rr_ratio = abs(profits_result[0]['profit'] / pos_result['risk_amount']) if pos_result['risk_amount'] > 0 else 0
+    result_text += f"\n⚡ *Соотношение R/R:* {rr_ratio:.2f}"
+    
+    if rr_ratio < 1:
+        result_text += "\n🔻 *Внимание:* Соотношение риск/вознаграждение менее 1:1"
+    elif rr_ratio >= 3:
+        result_text += "\n✅ *Отлично:* Соотношение риск/вознаграждение 1:3 или выше"
+    
+    if pos_result['risk_percent'] > 5:
+        result_text += "\n🔻 *Внимание:* Риск на сделку превышает 5%"
+    
+    result_text += "\n\n💡 *PRO рекомендация:* Всегда используйте стоп-лосс и управляйте рисками!"
+    
+    return result_text
+
+# Back navigation handlers
+@log_performance
+async def back_to_instrument(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back to instrument type selection"""
+    return await start_pro_calculation(update, context)
+
+@log_performance
+async def back_to_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back to currency selection"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    instrument_type = user_data[user_id].get('instrument_type', 'forex')
+    display_type = INSTRUMENT_TYPES.get(instrument_type, instrument_type)
+    
+    # Create keyboard with instrument presets
+    keyboard = []
+    presets = INSTRUMENT_PRESETS.get(instrument_type, [])
+    
+    # Add preset buttons in rows of 2
+    for i in range(0, len(presets), 2):
+        row = []
+        if i < len(presets):
+            row.append(InlineKeyboardButton(presets[i], callback_data=f"currency_{presets[i]}"))
+        if i + 1 < len(presets):
+            row.append(InlineKeyboardButton(presets[i + 1], callback_data=f"currency_{presets[i + 1]}"))
+        keyboard.append(row)
+    
+    # Add custom input and back buttons
+    keyboard.append([InlineKeyboardButton("✏️ Ввести свой тикер", callback_data="custom_currency")])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="pro_calculation")])
+    
+    await query.edit_message_text(
+        f"✅ *Тип инструмента:* {display_type}\n\n"
+        "📊 *Выберите инструмент из списка или введите свой:*",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return CURRENCY
+
+@log_performance
+async def back_to_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back to direction selection"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    currency = user_data[user_id].get('currency', 'EURUSD')
+    
+    await query.edit_message_text(
+        f"✅ *Инструмент:* {currency}\n\n"
+        "🎯 *Выберите направление сделки:*",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📈 BUY", callback_data="direction_BUY")],
+            [InlineKeyboardButton("📉 SELL", callback_data="direction_SELL")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_instrument")]
+        ])
+    )
+    return DIRECTION
+
+@log_performance
+async def back_to_risk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back to risk selection"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    direction = user_data[user_id].get('direction', 'BUY')
+    
+    keyboard = []
+    for i in range(0, len(RISK_LEVELS), 3):
+        row = []
+        for j in range(3):
+            if i + j < len(RISK_LEVELS):
+                risk = RISK_LEVELS[i + j]
+                row.append(InlineKeyboardButton(risk, callback_data=f"risk_{risk}"))
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_currency")])
+    
+    await query.edit_message_text(
+        f"✅ *Направление:* {direction}\n\n"
+        "⚠️ *Выберите уровень риска (% от депозита):*",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return RISK_PERCENT
+
+@log_performance
+async def back_to_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back to deposit input"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    risk_percent = user_data[user_id].get('risk_percent', 0.02) * 100
+    
+    await query.edit_message_text(
+        f"✅ *Уровень риска:* {risk_percent:.0f}%\n\n"
+        "💰 *Введите сумму депозита* (в USD):\n\n"
+        "Пример: 10000",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_direction")]
+        ])
+    )
+    return DEPOSIT
+
+@log_performance
+async def back_to_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back to leverage selection"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    deposit = user_data[user_id].get('deposit', 10000)
+    
+    keyboard = []
+    for i in range(0, len(LEVERAGES), 3):
+        row = []
+        for j in range(3):
+            if i + j < len(LEVERAGES):
+                leverage = LEVERAGES[i + j]
+                row.append(InlineKeyboardButton(leverage, callback_data=f"leverage_{leverage}"))
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_risk")])
+    
+    await query.edit_message_text(
+        f"✅ *Депозит:* ${deposit:,.2f}\n\n"
+        "⚖️ *Выберите кредитное плечо:*",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return LEVERAGE
+
+@log_performance
+async def back_to_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back to entry price input"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    leverage = user_data[user_id].get('leverage', '1:100')
+    currency = user_data[user_id].get('currency', 'инструмент')
+    
+    await query.edit_message_text(
+        f"✅ *Плечо:* {leverage}\n\n"
+        f"📈 *Введите цену входа для {currency}:*\n\n"
+        "Пример: 1.0850",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_deposit")]
+        ])
+    )
+    return ENTRY
+
+@log_performance
+async def back_to_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back to stop loss input"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    entry_price = user_data[user_id].get('entry', 1.0850)
+    currency = user_data[user_id].get('currency', 'инструмент')
+    
+    await query.edit_message_text(
+        f"✅ *Цена входа:* {entry_price}\n\n"
+        f"🛑 *Введите цену стоп-лосса для {currency}:*\n\n"
+        "Пример: 1.0800",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_leverage")]
+        ])
+    )
+    return STOP_LOSS
+
+@log_performance
+async def back_to_take_profits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back to take profits input"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    stop_loss = user_data[user_id].get('stop_loss', 1.0800)
+    currency = user_data[user_id].get('currency', 'инструмент')
+    
+    await query.edit_message_text(
+        f"✅ *Стоп-лосс:* {stop_loss}\n\n"
+        f"🎯 *Введите цены тейк-профитов для {currency} (через запятую):*\n\n"
+        "Пример: 1.0900, 1.0950, 1.1000\n"
+        "Можно указать до 3 уровней",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_entry")]
+        ])
+    )
+    return TAKE_PROFITS
+
+# Simplified handler for quick calculation currency input
 @log_performance
 async def process_currency_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process instrument ticker input for quick calculation"""
@@ -1318,8 +2038,47 @@ def main():
             INSTRUMENT_TYPE: [
                 CallbackQueryHandler(process_instrument_type, pattern='^inst_type_')
             ],
+            CURRENCY: [
+                CallbackQueryHandler(process_currency_selection, pattern='^currency_'),
+                CallbackQueryHandler(process_custom_currency, pattern='^custom_currency$'),
+                CallbackQueryHandler(back_to_instrument, pattern='^back_to_instrument$'),
+                CallbackQueryHandler(back_to_instrument, pattern='^pro_calculation$')
+            ],
             CUSTOM_INSTRUMENT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, process_currency_input)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_currency_input),
+                CallbackQueryHandler(back_to_currency, pattern='^back_to_currency$')
+            ],
+            DIRECTION: [
+                CallbackQueryHandler(process_direction, pattern='^direction_'),
+                CallbackQueryHandler(back_to_currency, pattern='^back_to_currency$')
+            ],
+            RISK_PERCENT: [
+                CallbackQueryHandler(process_risk_percent, pattern='^risk_'),
+                CallbackQueryHandler(back_to_direction, pattern='^back_to_direction$')
+            ],
+            DEPOSIT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_deposit),
+                CallbackQueryHandler(back_to_risk, pattern='^back_to_risk$')
+            ],
+            LEVERAGE: [
+                CallbackQueryHandler(process_leverage, pattern='^leverage_'),
+                CallbackQueryHandler(back_to_deposit, pattern='^back_to_deposit$')
+            ],
+            ENTRY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_entry),
+                CallbackQueryHandler(back_to_leverage, pattern='^back_to_leverage$')
+            ],
+            STOP_LOSS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_stop_loss),
+                CallbackQueryHandler(back_to_entry, pattern='^back_to_entry$')
+            ],
+            TAKE_PROFITS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_take_profits),
+                CallbackQueryHandler(back_to_stop_loss, pattern='^back_to_stop_loss$')
+            ],
+            VOLUME_DISTRIBUTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_volume_distribution),
+                CallbackQueryHandler(back_to_take_profits, pattern='^back_to_take_profits$')
             ],
             PORTFOLIO_MENU: [
                 CallbackQueryHandler(portfolio_trades, pattern='^portfolio_trades$'),
@@ -1351,6 +2110,16 @@ def main():
 
     # Add handlers
     application.add_handler(conv_handler)
+    
+    # Add individual callback handlers for back navigation
+    application.add_handler(CallbackQueryHandler(back_to_currency, pattern='^back_to_currency$'))
+    application.add_handler(CallbackQueryHandler(back_to_direction, pattern='^back_to_direction$'))
+    application.add_handler(CallbackQueryHandler(back_to_risk, pattern='^back_to_risk$'))
+    application.add_handler(CallbackQueryHandler(back_to_deposit, pattern='^back_to_deposit$'))
+    application.add_handler(CallbackQueryHandler(back_to_leverage, pattern='^back_to_leverage$'))
+    application.add_handler(CallbackQueryHandler(back_to_entry, pattern='^back_to_entry$'))
+    application.add_handler(CallbackQueryHandler(back_to_stop_loss, pattern='^back_to_stop_loss$'))
+    application.add_handler(CallbackQueryHandler(back_to_take_profits, pattern='^back_to_take_profits$'))
     
     # Add individual callback handlers
     application.add_handler(CallbackQueryHandler(portfolio_trades, pattern='^portfolio_trades$'))
