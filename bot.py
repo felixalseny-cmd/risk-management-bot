@@ -21,7 +21,7 @@ from pymongo import MongoClient
 import threading
 import requests
 import schedule
-from aiohttp import web
+
 # Logging setup
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -29,6 +29,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # Conversation states
 (
     MAIN_MENU, INSTRUMENT_TYPE, CUSTOM_INSTRUMENT, DIRECTION, 
@@ -36,8 +37,10 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
     STOP_LOSS, TAKE_PROFITS, VOLUME_DISTRIBUTION,
     PORTFOLIO_MENU, ANALYTICS_MENU, TRADE_HISTORY, PERFORMANCE_ANALYSIS
 ) = range(16)
+
 # Temporary storage
 user_data: Dict[int, Dict[str, Any]] = {}
+
 # MongoDB Connection
 MONGO_URI = os.getenv('MONGODB_URI', 'mongodb+srv://felixalseny_db_user:kontraktaciA22@felix22.3nx1ibi.mongodb.net/risk_bot_pro?retryWrites=true&w=majority&appName=Felix22')
 mongo_client = None
@@ -46,7 +49,7 @@ users_collection = None
 portfolio_collection = None
 try:
     mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    mongo_client.server_info()  # Test connection
+    mongo_client.server_info()
     db = mongo_client.risk_bot_pro
     users_collection = db.users
     portfolio_collection = db.portfolios
@@ -55,6 +58,7 @@ except Exception as e:
     logger.error(f"❌ MongoDB connection failed: {e}")
     users_collection = None
     portfolio_collection = None
+
 # Ultra-fast cache manager
 class FastCache:
     def __init__(self, max_size=500, ttl=300):
@@ -73,9 +77,9 @@ class FastCache:
         if len(self.cache) >= self.max_size:
             self.cache.clear()
         self.cache[key] = (value, time.time())
-# Global cache
+
 fast_cache = FastCache()
-# Performance logging decorator
+
 def log_performance(func):
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
@@ -86,6 +90,7 @@ def log_performance(func):
             logger.warning(f"Slow operation: {func.__name__} took {execution_time:.2f}s")
         return result
     return wrapper
+
 # Constants
 INSTRUMENT_TYPES = {
     'forex': 'Forex',
@@ -121,11 +126,11 @@ CONTRACT_SIZES = {
 LEVERAGES = ['1:10', '1:20', '1:50', '1:100', '1:200', '1:500', '1:1000']
 RISK_LEVELS = ['2%', '5%', '10%', '15%', '20%', '25%']
 TRADE_DIRECTIONS = ['BUY', 'SELL']
+
 # MongoDB Data Management
 class MongoDBManager:
     @staticmethod
     def get_user_data(user_id: int) -> Dict[str, Any]:
-        """Get user data from MongoDB"""
         if users_collection is None:
             return {}
         try:
@@ -136,7 +141,6 @@ class MongoDBManager:
             return {}
     @staticmethod
     def update_user_data(user_id: int, data: Dict[str, Any]):
-        """Update user data in MongoDB"""
         if users_collection is None:
             return
         try:
@@ -149,7 +153,6 @@ class MongoDBManager:
             logger.error(f"Error updating user data: {e}")
     @staticmethod
     def get_portfolio(user_id: int) -> Dict[str, Any]:
-        """Get portfolio from MongoDB"""
         if portfolio_collection is None:
             return {}
         try:
@@ -160,7 +163,6 @@ class MongoDBManager:
             return {}
     @staticmethod
     def update_portfolio(user_id: int, portfolio_data: Dict[str, Any]):
-        """Update portfolio in MongoDB"""
         if portfolio_collection is None:
             return
         try:
@@ -171,6 +173,7 @@ class MongoDBManager:
             )
         except Exception as e:
             logger.error(f"Error updating portfolio: {e}")
+
 # Portfolio Data Management
 class PortfolioManager:
     @staticmethod
@@ -196,6 +199,7 @@ class PortfolioManager:
             }
             MongoDBManager.update_portfolio(user_id, portfolio_data)
         return portfolio_data
+
     @staticmethod
     def add_trade(user_id: int, trade_data: Dict):
         portfolio_data = PortfolioManager.initialize_user_portfolio(user_id)
@@ -203,14 +207,11 @@ class PortfolioManager:
         trade_data['id'] = trade_id
         trade_data['timestamp'] = datetime.now().isoformat()
         portfolio_data['trades'].append(trade_data)
-        # Update performance metrics
         PortfolioManager.update_performance_metrics(user_id, portfolio_data)
-        # Update allocation
         instrument = trade_data.get('instrument', 'Unknown')
         if instrument not in portfolio_data['allocation']:
             portfolio_data['allocation'][instrument] = 0
         portfolio_data['allocation'][instrument] += 1
-        # Add to history
         portfolio_data['history'].append({
             'type': 'trade',
             'action': 'open' if trade_data.get('status') == 'open' else 'close',
@@ -219,6 +220,7 @@ class PortfolioManager:
             'timestamp': trade_data['timestamp']
         })
         MongoDBManager.update_portfolio(user_id, portfolio_data)
+
     @staticmethod
     def update_performance_metrics(user_id: int, portfolio_data: Dict):
         trades = portfolio_data['trades']
@@ -243,68 +245,33 @@ class PortfolioManager:
                 if losing_trades else 0
             )
         MongoDBManager.update_portfolio(user_id, portfolio_data)
-# Simple HTTP server for health checks using aiohttp
-async def handle_health(request):
-    try:
-        # Test MongoDB connection
-        mongo_ok = False
-        if users_collection is not None:
-            users_collection.find_one({})
-            mongo_ok = True
-        response_data = {
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "services": {
-                "mongodb": "connected" if mongo_ok else "disconnected",
-                "telegram_bot": "running"
-            }
-        }
-        return web.Response(text=json.dumps(response_data), content_type='application/json')
-    except Exception as e:
-        return web.Response(text=json.dumps({"status": "unhealthy", "error": str(e)}), 
-                          content_type='application/json', status=500)
-async def handle_home(request):
-    return web.Response(text="🤖 PRO Risk Management Bot is ALIVE and RUNNING!")
-async def handle_webhook(request):
-    """Webhook endpoint for Telegram - will be handled by the bot framework"""
-    return web.Response(text="OK")
-async def start_http_server(port=8080):
-    """Start HTTP server for health checks"""
-    app = web.Application()
-    app.router.add_get('/', handle_home)
-    app.router.add_get('/health', handle_health)
-    app.router.add_post('/webhook', handle_webhook)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    logger.info(f"✅ HTTP health check server started on port {port}!")
-    return runner
+
 # Keep-alive to prevent Render sleep
 def keep_alive():
     try:
         bot_url = os.getenv('RENDER_EXTERNAL_URL', 'https://risk-management-bot-pro.onrender.com')
         if bot_url:
-            response = requests.get(f"{bot_url}/health", timeout=10)
-            if response.status_code == 200:
+            response = requests.get(f"{bot_url}/webhook", timeout=10)
+            if response.status_code in (200, 400):  # 400 = empty update (ok for health check)
                 logger.info("✅ Keep-alive ping successful")
             else:
                 logger.warning(f"⚠️ Keep-alive returned status: {response.status_code}")
     except Exception as e:
         logger.warning(f"⚠️ Keep-alive failed: {e}")
+
 def schedule_runner():
     while True:
         schedule.run_pending()
         time.sleep(60)
-# Start keep-alive scheduler in background
+
 schedule.every(5).minutes.do(keep_alive)
 schedule_thread = threading.Thread(target=schedule_runner, daemon=True)
 schedule_thread.start()
 logger.info("✅ Keep-alive scheduler started!")
+
 # === ОСНОВНЫЕ ОБРАБОТЧИКИ ===
 @log_performance
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Main menu"""
     if update.message:
         user = update.message.from_user
     elif update.callback_query:
@@ -318,10 +285,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 ⚡ *Выберите опцию:*
 """
     user_id = user.id
-    # Get user data from MongoDB
     user_data_dict = MongoDBManager.get_user_data(user_id)
     old_presets = user_data_dict.get('presets', [])
-    # Update user data in MongoDB
     updated_data = {
         'start_time': datetime.now().isoformat(),
         'last_activity': time.time(),
@@ -330,6 +295,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         'first_name': user.first_name
     }
     MongoDBManager.update_user_data(user_id, updated_data)
+
     keyboard = [
         [InlineKeyboardButton("📊 Профессиональный расчет", callback_data="pro_calculation")],
         [InlineKeyboardButton("⚡ Быстрый расчет", callback_data="quick_calculation")],
@@ -350,9 +316,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     return MAIN_MENU
+
 @log_performance
 async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle main menu callbacks"""
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -369,9 +335,9 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     elif data == "main_menu":
         return await start(update, context)
     return MAIN_MENU
+
 @log_performance
 async def start_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Start professional calculation"""
     keyboard = []
     for key, value in INSTRUMENT_TYPES.items():
         keyboard.append([InlineKeyboardButton(value, callback_data=f"inst_type_{key}")])
@@ -383,18 +349,18 @@ async def start_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return INSTRUMENT_TYPE
+
 @log_performance
 async def start_quick_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Start quick calculation"""
     await update.callback_query.edit_message_text(
         "⚡ *Быстрый расчет*\n"
         "Эта функция в разработке. Используйте профессиональный расчет для полного анализа.",
         parse_mode='Markdown'
     )
     return MAIN_MENU
+
 @log_performance
 async def show_portfolio_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show portfolio menu"""
     user_id = update.callback_query.from_user.id
     portfolio_data = PortfolioManager.initialize_user_portfolio(user_id)
     performance = portfolio_data['performance']
@@ -420,9 +386,9 @@ async def show_portfolio_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return PORTFOLIO_MENU
+
 @log_performance
 async def show_analytics_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show analytics menu"""
     text = """
 📈 *Аналитика и Отчеты*
 Здесь вы можете получить детальную аналитику по вашим сделкам и стратегии.
@@ -441,9 +407,9 @@ async def show_analytics_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return ANALYTICS_MENU
+
 @log_performance
 async def show_pro_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show PRO instructions"""
     text = """
 📚 *PRO Инструкции*
 *🎯 Калькулятор Риск-Менеджмента v3.0*
@@ -463,48 +429,41 @@ async def show_pro_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 • Соотношение риск/вознаграждение: минимум 1:2
 • Диверсифицируйте портфель
 """
-    keyboard = [
-        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]]
     await update.callback_query.edit_message_text(
         text,
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return MAIN_MENU
+
 @log_performance
 async def quick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle /quick command"""
     return await start(update, context)
+
 @log_performance
 async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle /portfolio command"""
     return await show_portfolio_menu(update, context)
+
 @log_performance
 async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle /analytics command"""
     return await show_analytics_menu(update, context)
+
 @log_performance
 async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle /info command"""
     return await show_pro_info(update, context)
+
 @log_performance
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancel conversation"""
     if update.message:
-        await update.message.reply_text(
-            "❌ Операция отменена.",
-            reply_markup=ReplyKeyboardRemove()
-        )
+        await update.message.reply_text("❌ Операция отменена.", reply_markup=ReplyKeyboardRemove())
     elif update.callback_query:
-        await update.callback_query.edit_message_text(
-            "❌ Операция отменена."
-        )
+        await update.callback_query.edit_message_text("❌ Операция отменена.")
     return ConversationHandler.END
+
 # === PORTFOLIO HANDLERS ===
 @log_performance
 async def portfolio_trades(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show portfolio trades"""
     user_id = update.callback_query.from_user.id
     portfolio_data = PortfolioManager.initialize_user_portfolio(user_id)
     trades = portfolio_data['trades']
@@ -512,7 +471,7 @@ async def portfolio_trades(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         text = "📊 *Мои Сделки*\nУ вас пока нет сделок."
     else:
         text = "📊 *Мои Сделки*\n"
-        for trade in trades[-10:]:  # Show last 10 trades
+        for trade in trades[-10:]:
             status = "🟢 Открыта" if trade.get('status') == 'open' else "🔴 Закрыта"
             profit = trade.get('profit', 0)
             profit_text = f"+${profit:.2f}" if profit > 0 else f"-${abs(profit):.2f}"
@@ -524,9 +483,9 @@ async def portfolio_trades(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return PORTFOLIO_MENU
+
 @log_performance
 async def portfolio_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show portfolio balance"""
     user_id = update.callback_query.from_user.id
     portfolio_data = PortfolioManager.initialize_user_portfolio(user_id)
     text = f"""
@@ -543,9 +502,9 @@ async def portfolio_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return PORTFOLIO_MENU
+
 @log_performance
 async def portfolio_performance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show portfolio performance"""
     user_id = update.callback_query.from_user.id
     portfolio_data = PortfolioManager.initialize_user_portfolio(user_id)
     perf = portfolio_data['performance']
@@ -567,9 +526,9 @@ async def portfolio_performance(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return PORTFOLIO_MENU
+
 @log_performance
 async def portfolio_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show portfolio history"""
     user_id = update.callback_query.from_user.id
     portfolio_data = PortfolioManager.initialize_user_portfolio(user_id)
     history = portfolio_data['history']
@@ -577,7 +536,7 @@ async def portfolio_history(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         text = "📋 *История*\nИстория операций пуста."
     else:
         text = "📋 *История Операций*\n"
-        for event in history[-10:]:  # Show last 10 events
+        for event in history[-10:]:
             if event['type'] == 'trade':
                 action = "📈 Открыта" if event['action'] == 'open' else "📉 Закрыта"
                 profit_text = f" | PnL: ${event['profit']:.2f}" if event.get('profit') else ""
@@ -589,9 +548,9 @@ async def portfolio_history(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return PORTFOLIO_MENU
+
 @log_performance
 async def portfolio_add_trade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Add trade to portfolio"""
     user_id = update.callback_query.from_user.id
     sample_trade = {
         'instrument': 'EURUSD',
@@ -609,20 +568,20 @@ async def portfolio_add_trade(update: Update, context: ContextTypes.DEFAULT_TYPE
         parse_mode='Markdown'
     )
     return await show_portfolio_menu(update, context)
+
 @log_performance
 async def portfolio_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle portfolio deposit"""
     await update.callback_query.edit_message_text(
         "💳 *Пополнение Депозита*\nЭта функция в разработке. В будущем вы сможете пополнять депозит через различные платежные системы.",
         parse_mode='Markdown'
     )
     return PORTFOLIO_MENU
+
 @log_performance
 async def portfolio_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Back to portfolio menu"""
     return await show_portfolio_menu(update, context)
+
 # === ANALYTICS HANDLERS ===
-# Analytics Engine
 class AnalyticsEngine:
     @staticmethod
     def calculate_risk_reward_analysis(trades: List[Dict]) -> Dict[str, Any]:
@@ -650,6 +609,7 @@ class AnalyticsEngine:
             'consistency_score': AnalyticsEngine.calculate_consistency(profits),
             'risk_score': AnalyticsEngine.calculate_risk_score(profits)
         }
+
     @staticmethod
     def calculate_consistency(profits: List[float]) -> float:
         if len(profits) < 2:
@@ -658,6 +618,7 @@ class AnalyticsEngine:
         if not positive_profits:
             return 0
         return (len(positive_profits) / len(profits)) * 100
+
     @staticmethod
     def calculate_risk_score(profits: List[float]) -> float:
         if not profits:
@@ -667,6 +628,7 @@ class AnalyticsEngine:
             return 0
         positive_count = len([p for p in profits if p > 0])
         return (positive_count / len(profits)) * 100
+
     @staticmethod
     def generate_strategy_recommendations(portfolio: Dict) -> List[str]:
         recommendations = []
@@ -684,9 +646,9 @@ class AnalyticsEngine:
         if not recommendations:
             recommendations.append("✅ Ваша стратегия показывает хорошие результаты! Продолжайте в том же духе")
         return recommendations
+
 @log_performance
 async def analytics_risk_reward(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show risk/reward analysis"""
     user_id = update.callback_query.from_user.id
     portfolio_data = PortfolioManager.initialize_user_portfolio(user_id)
     trades = portfolio_data['trades']
@@ -710,9 +672,9 @@ async def analytics_risk_reward(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return ANALYTICS_MENU
+
 @log_performance
 async def analytics_strategy_perf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show strategy performance"""
     user_id = update.callback_query.from_user.id
     portfolio_data = PortfolioManager.initialize_user_portfolio(user_id)
     perf = portfolio_data['performance']
@@ -726,7 +688,7 @@ async def analytics_strategy_perf(update: Update, context: ContextTypes.DEFAULT_
 • Средний убыток: ${perf['average_loss']:.2f}
 *Распределение по инструментам:*
 """
-    for instrument, count in list(allocation.items())[:5]:  # Show top 5
+    for instrument, count in list(allocation.items())[:5]:
         text += f"• {instrument}: {count} сделок\n"
     if perf['win_rate'] > 60:
         rating = "⭐️⭐️⭐️⭐️⭐️ (Отлично)"
@@ -744,9 +706,9 @@ async def analytics_strategy_perf(update: Update, context: ContextTypes.DEFAULT_
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return ANALYTICS_MENU
+
 @log_performance
 async def analytics_trade_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show trade statistics"""
     user_id = update.callback_query.from_user.id
     portfolio_data = PortfolioManager.initialize_user_portfolio(user_id)
     trades = portfolio_data['trades']
@@ -778,9 +740,9 @@ async def analytics_trade_stats(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return ANALYTICS_MENU
+
 @log_performance
 async def analytics_optimization(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show risk optimization suggestions"""
     user_id = update.callback_query.from_user.id
     portfolio_data = PortfolioManager.initialize_user_portfolio(user_id)
     trades = portfolio_data['trades']
@@ -815,9 +777,9 @@ async def analytics_optimization(update: Update, context: ContextTypes.DEFAULT_T
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return ANALYTICS_MENU
+
 @log_performance
 async def analytics_recommendations(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show personalized recommendations"""
     user_id = update.callback_query.from_user.id
     portfolio_data = PortfolioManager.initialize_user_portfolio(user_id)
     recommendations = AnalyticsEngine.generate_strategy_recommendations(portfolio_data)
@@ -827,9 +789,8 @@ async def analytics_recommendations(update: Update, context: ContextTypes.DEFAUL
 """
     for i, rec in enumerate(recommendations, 1):
         text += f"{i}. {rec}\n"
-    text += "\n*Общие советы:*"
-    text += """
-• Регулярно обновляйте торговый журнал
+    text += "\n*Общие советы:*\n"
+    text += """• Регулярно обновляйте торговый журнал
 • Анализируйте ошибки и успехи
 • Следите за экономическим календарем
 • Используйте технический и фундаментальный анализ
@@ -841,14 +802,14 @@ async def analytics_recommendations(update: Update, context: ContextTypes.DEFAUL
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return ANALYTICS_MENU
+
 @log_performance
 async def analytics_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Back to analytics menu"""
     return await show_analytics_menu(update, context)
+
 # === CALCULATION PROCESS HANDLERS ===
 @log_performance
 async def process_instrument_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process instrument type selection"""
     query = update.callback_query
     await query.answer()
     instrument_type = query.data.replace('inst_type_', '')
@@ -866,9 +827,9 @@ async def process_instrument_type(update: Update, context: ContextTypes.DEFAULT_
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return CURRENCY
+
 @log_performance
 async def process_currency_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process currency selection from presets"""
     query = update.callback_query
     await query.answer()
     currency_pair = query.data.replace('currency_', '')
@@ -884,9 +845,9 @@ async def process_currency_selection(update: Update, context: ContextTypes.DEFAU
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return DIRECTION
+
 @log_performance
 async def process_custom_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process custom currency input request"""
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
@@ -895,9 +856,9 @@ async def process_custom_currency(update: Update, context: ContextTypes.DEFAULT_
         parse_mode='Markdown'
     )
     return CUSTOM_INSTRUMENT
+
 @log_performance
 async def process_currency_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process custom currency input"""
     currency_pair = update.message.text.upper().strip()
     context.user_data['currency_pair'] = currency_pair
     keyboard = []
@@ -910,13 +871,13 @@ async def process_currency_input(update: Update, context: ContextTypes.DEFAULT_T
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return DIRECTION
+
 @log_performance
 async def back_to_instrument(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Go back to instrument selection"""
     return await start_pro_calculation(update, context)
+
 @log_performance
 async def process_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process trade direction"""
     query = update.callback_query
     await query.answer()
     direction = query.data.replace('direction_', '')
@@ -931,9 +892,9 @@ async def process_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return RISK_PERCENT
+
 @log_performance
 async def process_risk_percent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process risk percentage"""
     query = update.callback_query
     await query.answer()
     risk_percent = float(query.data.replace('risk_', '').replace('%', '')) / 100
@@ -945,9 +906,9 @@ async def process_risk_percent(update: Update, context: ContextTypes.DEFAULT_TYP
         parse_mode='Markdown'
     )
     return DEPOSIT
+
 @log_performance
 async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process deposit amount"""
     try:
         deposit = float(update.message.text.replace(',', '.'))
         if deposit <= 0:
@@ -967,9 +928,9 @@ async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except ValueError:
         await update.message.reply_text("❌ Пожалуйста, введите корректное число для депозита:")
         return DEPOSIT
+
 @log_performance
 async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process leverage selection"""
     query = update.callback_query
     await query.answer()
     leverage = query.data.replace('leverage_', '')
@@ -981,9 +942,9 @@ async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         parse_mode='Markdown'
     )
     return ENTRY
+
 @log_performance
 async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process entry price"""
     try:
         entry_price = float(update.message.text.replace(',', '.'))
         if entry_price <= 0:
@@ -1000,9 +961,9 @@ async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     except ValueError:
         await update.message.reply_text("❌ Пожалуйста, введите корректное число для цены входа:")
         return ENTRY
+
 @log_performance
 async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process stop loss price"""
     try:
         stop_loss = float(update.message.text.replace(',', '.'))
         entry_price = context.user_data.get('entry_price', 0)
@@ -1027,9 +988,9 @@ async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     except ValueError:
         await update.message.reply_text("❌ Пожалуйста, введите корректное число для стоп-лосса:")
         return STOP_LOSS
+
 @log_performance
 async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process take profit prices"""
     try:
         take_profits_text = update.message.text.replace(',', '.').split(',')
         take_profits = [float(tp.strip()) for tp in take_profits_text if tp.strip()]
@@ -1056,9 +1017,9 @@ async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYP
     except ValueError:
         await update.message.reply_text("❌ Пожалуйста, введите корректные числа для тейк-профитов:")
         return TAKE_PROFITS
+
 @log_performance
 async def process_volume_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process volume distribution"""
     try:
         volume_text = update.message.text.replace(',', '.').split(',')
         volume_distribution = [float(vol.strip()) for vol in volume_text if vol.strip()]
@@ -1078,6 +1039,7 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
     except ValueError:
         await update.message.reply_text("❌ Пожалуйста, введите корректные числа для распределения объема:")
         return VOLUME_DISTRIBUTION
+
 # Ultra-fast risk calculator
 class FastRiskCalculator:
     @staticmethod
@@ -1089,6 +1051,7 @@ class FastRiskCalculator:
             return base_pip_value * lot_size * 0.01
         else:
             return base_pip_value * lot_size
+
     @staticmethod
     def calculate_position_size_fast(
         deposit: float,
@@ -1153,6 +1116,7 @@ class FastRiskCalculator:
                 'risk_percent': 0,
                 'free_margin': deposit
             }
+
     @staticmethod
     def calculate_profits_fast(
         instrument_type: str,
@@ -1193,9 +1157,9 @@ class FastRiskCalculator:
                 'roi_percent': (profit / position_value) * 100 if position_value > 0 else 0
             })
         return profits
+
 @log_performance
 async def show_calculation_results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show final calculation results"""
     user_data = context.user_data
     instrument_type = user_data.get('instrument_type', 'forex')
     currency_pair = user_data.get('currency_pair', 'EURUSD')
@@ -1207,6 +1171,7 @@ async def show_calculation_results(update: Update, context: ContextTypes.DEFAULT
     stop_loss = user_data.get('stop_loss', 0.9)
     take_profits = user_data.get('take_profits', [1.1])
     volume_distribution = user_data.get('volume_distribution', [100])
+
     calculation_result = FastRiskCalculator.calculate_position_size_fast(
         deposit=deposit,
         leverage=leverage,
@@ -1217,11 +1182,13 @@ async def show_calculation_results(update: Update, context: ContextTypes.DEFAULT
         direction=direction,
         risk_percent=risk_percent
     )
+
     position_size = calculation_result['position_size']
     risk_amount = calculation_result['risk_amount']
     stop_pips = calculation_result['stop_pips']
     required_margin = calculation_result['required_margin']
     free_margin = calculation_result['free_margin']
+
     profit_calculations = FastRiskCalculator.calculate_profits_fast(
         instrument_type=instrument_type,
         currency_pair=currency_pair,
@@ -1231,6 +1198,7 @@ async def show_calculation_results(update: Update, context: ContextTypes.DEFAULT
         volume_distribution=volume_distribution,
         direction=direction
     )
+
     results_text = f"""
 🎯 *РЕЗУЛЬТАТЫ РАСЧЕТА*
 *Основные параметры:*
@@ -1271,6 +1239,7 @@ TP{i+1}:
         results_text += "\n⚠️ *Соотношение приемлемое, но можно улучшить.*"
     else:
         results_text += "\n❌ *Соотношение риск/вознаграждение неблагоприятное!*"
+
     keyboard = [
         [InlineKeyboardButton("💾 Сохранить в портфель", callback_data="save_to_portfolio")],
         [InlineKeyboardButton("🔄 Новый расчет", callback_data="pro_calculation")],
@@ -1289,14 +1258,17 @@ TP{i+1}:
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     return MAIN_MENU
-# Исправленная функция main() для Render
+
+# Main function
 async def main():
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     if not token:
         logger.error("❌ PRO Bot token not found!")
         return
+
     logger.info("🚀 Starting ULTRA-FAST PRO Risk Management Bot v3.0 with Enhanced Portfolio & Analytics...")
     application = Application.builder().token(token).build()
+
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('start', start),
@@ -1344,18 +1316,17 @@ async def main():
         fallbacks=[CommandHandler('cancel', cancel), CommandHandler('start', start)],
         allow_reentry=True
     )
+
     application.add_handler(conv_handler)
-    port = int(os.environ.get('PORT', 10000))
-    http_runner = await start_http_server(port)
-    await application.initialize()
+
+    # Use PORT provided by Render
+    port = int(os.environ.get('PORT', 8443))
     webhook_url = os.getenv('RENDER_EXTERNAL_URL', '').rstrip('/')
+    
     if webhook_url and "render.com" in webhook_url:
         full_webhook_url = f"{webhook_url}/webhook"
         logger.info(f"🔗 PRO Webhook URL: {full_webhook_url}")
-        await application.bot.set_webhook(
-            url=full_webhook_url,
-            allowed_updates=Update.ALL_TYPES
-        )
+        await application.bot.set_webhook(url=full_webhook_url)
         await application.updater.start_webhook(
             listen="0.0.0.0",
             port=port,
@@ -1365,13 +1336,14 @@ async def main():
     else:
         logger.info("🔍 PRO Starting in polling mode...")
         await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+
     try:
         await asyncio.Event().wait()
     except (KeyboardInterrupt, SystemExit):
         logger.info("🛑 Bot is shutting down...")
     finally:
-        await application.updater.stop()
+        await application.stop()
         await application.shutdown()
-        await http_runner.cleanup()
+
 if __name__ == '__main__':
     asyncio.run(main())
