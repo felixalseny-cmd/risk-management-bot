@@ -17,6 +17,11 @@ from telegram.ext import (
     ConversationHandler,
     CallbackQueryHandler
 )
+from pymongo import MongoClient
+from flask import Flask
+import threading
+import requests
+import schedule
 
 # Logging setup
 logging.basicConfig(
@@ -40,11 +45,10 @@ user_data: Dict[int, Dict[str, Any]] = {}
 class PortfolioManager:
     @staticmethod
     def initialize_user_portfolio(user_id: int):
-        if user_id not in user_data:
-            user_data[user_id] = {}
+        portfolio_data = MongoDBManager.get_portfolio(user_id)
         
-        if 'portfolio' not in user_data[user_id]:
-            user_data[user_id]['portfolio'] = {
+        if not portfolio_data:
+            portfolio_data = {
                 'initial_balance': 10000,
                 'current_balance': 10000,
                 'trades': [],
@@ -61,39 +65,43 @@ class PortfolioManager:
                 'allocation': {},
                 'history': []
             }
+            MongoDBManager.update_portfolio(user_id, portfolio_data)
+        
+        return portfolio_data
     
     @staticmethod
     def add_trade(user_id: int, trade_data: Dict):
-        PortfolioManager.initialize_user_portfolio(user_id)
+        portfolio_data = PortfolioManager.initialize_user_portfolio(user_id)
         
-        trade_id = len(user_data[user_id]['portfolio']['trades']) + 1
+        trade_id = len(portfolio_data['trades']) + 1
         trade_data['id'] = trade_id
         trade_data['timestamp'] = datetime.now().isoformat()
         
-        user_data[user_id]['portfolio']['trades'].append(trade_data)
+        portfolio_data['trades'].append(trade_data)
         
         # Update performance metrics
-        PortfolioManager.update_performance_metrics(user_id)
+        PortfolioManager.update_performance_metrics(user_id, portfolio_data)
         
         # Update allocation
         instrument = trade_data.get('instrument', 'Unknown')
-        if instrument not in user_data[user_id]['portfolio']['allocation']:
-            user_data[user_id]['portfolio']['allocation'][instrument] = 0
-        user_data[user_id]['portfolio']['allocation'][instrument] += 1
+        if instrument not in portfolio_data['allocation']:
+            portfolio_data['allocation'][instrument] = 0
+        portfolio_data['allocation'][instrument] += 1
         
         # Add to history
-        user_data[user_id]['portfolio']['history'].append({
+        portfolio_data['history'].append({
             'type': 'trade',
             'action': 'open' if trade_data.get('status') == 'open' else 'close',
             'instrument': instrument,
             'profit': trade_data.get('profit', 0),
             'timestamp': trade_data['timestamp']
         })
+        
+        MongoDBManager.update_portfolio(user_id, portfolio_data)
     
     @staticmethod
-    def update_performance_metrics(user_id: int):
-        portfolio = user_data[user_id]['portfolio']
-        trades = portfolio['trades']
+    def update_performance_metrics(user_id: int, portfolio_data: Dict):
+        trades = portfolio_data['trades']
         
         if not trades:
             return
@@ -102,23 +110,93 @@ class PortfolioManager:
         winning_trades = [t for t in closed_trades if t.get('profit', 0) > 0]
         losing_trades = [t for t in closed_trades if t.get('profit', 0) <= 0]
         
-        portfolio['performance']['total_trades'] = len(closed_trades)
-        portfolio['performance']['winning_trades'] = len(winning_trades)
-        portfolio['performance']['losing_trades'] = len(losing_trades)
-        portfolio['performance']['total_profit'] = sum(t.get('profit', 0) for t in winning_trades)
-        portfolio['performance']['total_loss'] = sum(t.get('profit', 0) for t in losing_trades)
+        portfolio_data['performance']['total_trades'] = len(closed_trades)
+        portfolio_data['performance']['winning_trades'] = len(winning_trades)
+        portfolio_data['performance']['losing_trades'] = len(losing_trades)
+        portfolio_data['performance']['total_profit'] = sum(t.get('profit', 0) for t in winning_trades)
+        portfolio_data['performance']['total_loss'] = sum(t.get('profit', 0) for t in losing_trades)
         
         if closed_trades:
-            portfolio['performance']['win_rate'] = (len(winning_trades) / len(closed_trades)) * 100
-            portfolio['performance']['average_profit'] = (
-                portfolio['performance']['total_profit'] / len(winning_trades) 
+            portfolio_data['performance']['win_rate'] = (len(winning_trades) / len(closed_trades)) * 100
+            portfolio_data['performance']['average_profit'] = (
+                portfolio_data['performance']['total_profit'] / len(winning_trades) 
                 if winning_trades else 0
             )
-            portfolio['performance']['average_loss'] = (
-                portfolio['performance']['total_loss'] / len(losing_trades) 
+            portfolio_data['performance']['average_loss'] = (
+                portfolio_data['performance']['total_loss'] / len(losing_trades) 
                 if losing_trades else 0
             )
+        
+        MongoDBManager.update_portfolio(user_id, portfolio_data)
     
+# Flask server for health checks
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 PRO Risk Management Bot is ALIVE and RUNNING!"
+
+@app.route('/health')
+def health():
+    try:
+        # Test MongoDB connection
+        if users_collection:
+            users_collection.find_one({})
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "services": {
+                "mongodb": "connected" if users_collection else "disconnected",
+                "telegram_bot": "running"
+            }
+        }
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}, 500
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Webhook endpoint for Telegram (if using webhook mode)"""
+    return "OK", 200
+
+def run_flask():
+    """Run Flask server in a separate thread"""
+    port = int(os.environ.get('FLASK_PORT', 8080))
+    app.run(host='0.0.0.0', port=port, debug=False)
+
+# Start Flask server
+flask_thread = threading.Thread(target=run_flask, daemon=True)
+flask_thread.start()
+logger.info("✅ Flask health check server started!")
+
+# Keep-alive system
+def keep_alive():
+    """Ping our own health endpoint to prevent sleeping"""
+    try:
+        bot_url = os.getenv('RENDER_EXTERNAL_URL', '')
+        if bot_url:
+            response = requests.get(f"{bot_url}/health", timeout=10)
+            if response.status_code == 200:
+                logger.info("✅ Keep-alive ping successful")
+            else:
+                logger.warning(f"⚠️ Keep-alive ping failed: {response.status_code}")
+    except Exception as e:
+        logger.warning(f"⚠️ Keep-alive failed: {e}")
+
+# Schedule keep-alive every 5 minutes
+schedule.every(5).minutes.do(keep_alive)
+
+def schedule_runner():
+    """Run scheduled tasks"""
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
+
+# Start schedule runner
+schedule_thread = threading.Thread(target=schedule_runner, daemon=True)
+schedule_thread.start()
+logger.info("✅ Keep-alive scheduler started!")
+
     @staticmethod
     def add_balance_operation(user_id: int, operation_type: str, amount: float, description: str = ""):
         PortfolioManager.initialize_user_portfolio(user_id)
@@ -459,6 +537,7 @@ def log_performance(func):
 
 # Main command handlers
 @log_performance
+@log_performance
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Main menu"""
     if update.message:
@@ -479,14 +558,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 """
     
     user_id = user.id
-    # Preserve presets on restart
-    old_presets = user_data.get(user_id, {}).get('presets', [])
     
-    user_data[user_id] = {
+    # Get user data from MongoDB
+    user_data_dict = MongoDBManager.get_user_data(user_id)
+    old_presets = user_data_dict.get('presets', [])
+    
+    # Update user data in MongoDB
+    updated_data = {
         'start_time': datetime.now().isoformat(),
         'last_activity': time.time(),
-        'presets': old_presets
+        'presets': old_presets,
+        'username': user.username,
+        'first_name': user.first_name
     }
+    MongoDBManager.update_user_data(user_id, updated_data)
     
     keyboard = [
         [InlineKeyboardButton("📊 Профессиональный расчет", callback_data="pro_calculation")],
@@ -509,55 +594,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     return MAIN_MENU
-
-@log_performance
-async def quick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Quick calculation"""
-    return await start_quick_calculation(update, context)
-
-@log_performance
-async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Enhanced Portfolio Management"""
-    user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
-    
-    # Initialize portfolio if not exists
-    PortfolioManager.initialize_user_portfolio(user_id)
-    
-    portfolio_text = """
-💼 *Управление Портфелем*
-
-📊 *Доступные функции:*
-• 📈 Обзор всех сделок
-• 💰 Баланс и распределение
-• 📊 Анализ эффективности
-• 🔄 История операций
-
-Выберите действие:
-"""
-    
-    keyboard = [
-        [InlineKeyboardButton("📈 Обзор сделок", callback_data="portfolio_trades")],
-        [InlineKeyboardButton("💰 Баланс и распределение", callback_data="portfolio_balance")],
-        [InlineKeyboardButton("📊 Анализ эффективности", callback_data="portfolio_performance")],
-        [InlineKeyboardButton("🔄 История операций", callback_data="portfolio_history")],
-        [InlineKeyboardButton("➕ Добавить сделку", callback_data="portfolio_add_trade")],
-        [InlineKeyboardButton("💸 Внести депозит", callback_data="portfolio_deposit")],
-        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-    ]
-    
-    if update.message:
-        await update.message.reply_text(
-            portfolio_text,
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    else:
-        await update.callback_query.edit_message_text(
-            portfolio_text,
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    return PORTFOLIO_MENU
 
 @log_performance
 async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2154,7 +2190,76 @@ def main():
             logger.info("🔄 PRO Starting in polling mode...")
             application.run_polling()
     except Exception as e:
-        logger.error(f"❌ Error starting PRO bot: {e}")
+        logger.error(f"❌ Error starting PRO bot: 
+
+# MongoDB Connection
+MONGO_URI = os.getenv('MONGODB_URI', 'your_mongodb_connection_string_here')
+try:
+    mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    mongo_client.server_info()  # Test connection
+    db = mongo_client.risk_bot
+    users_collection = db.users
+    portfolio_collection = db.portfolios
+    logger.info("✅ MongoDB connected successfully!")
+except Exception as e:
+    logger.error(f"❌ MongoDB connection failed: {e}")
+    # Fallback to in-memory storage
+    users_collection = None
+    portfolio_collection = None
+
+# MongoDB Manager
+class MongoDBManager:
+    @staticmethod
+    def get_user_data(user_id: int) -> Dict[str, Any]:
+        """Get user data from MongoDB"""
+        if not users_collection:
+            return {}
+        try:
+            user_data = users_collection.find_one({"user_id": user_id})
+            return user_data.get('data', {}) if user_data else {}
+        except Exception as e:
+            logger.error(f"Error getting user data: {e}")
+            return {}
+    
+    @staticmethod
+    def update_user_data(user_id: int, data: Dict[str, Any]):
+        """Update user data in MongoDB"""
+        if not users_collection:
+            return
+        try:
+            users_collection.update_one(
+                {"user_id": user_id},
+                {"$set": {"data": data, "last_updated": datetime.now()}},
+                upsert=True
+            )
+        except Exception as e:
+            logger.error(f"Error updating user data: {e}")
+    
+    @staticmethod
+    def get_portfolio(user_id: int) -> Dict[str, Any]:
+        """Get portfolio from MongoDB"""
+        if not portfolio_collection:
+            return {}
+        try:
+            portfolio = portfolio_collection.find_one({"user_id": user_id})
+            return portfolio.get('portfolio_data', {}) if portfolio else {}
+        except Exception as e:
+            logger.error(f"Error getting portfolio: {e}")
+            return {}
+    
+    @staticmethod
+    def update_portfolio(user_id: int, portfolio_data: Dict[str, Any]):
+        """Update portfolio in MongoDB"""
+        if not portfolio_collection:
+            return
+        try:
+            portfolio_collection.update_one(
+                {"user_id": user_id},
+                {"$set": {"portfolio_data": portfolio_data, "last_updated": datetime.now()}},
+                upsert=True
+            )
+        except Exception as e:
+            logger.error(f"Error updating portfolio: {e}")
 
 if __name__ == '__main__':
     main()
