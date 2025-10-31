@@ -1259,8 +1259,7 @@ TP{i+1}:
         )
     return MAIN_MENU
 
-# Main function
-async def main():
+# Main functionasync def main():
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     if not token:
         logger.error("❌ PRO Bot token not found!")
@@ -1319,15 +1318,15 @@ async def main():
 
     application.add_handler(conv_handler)
 
-    # Use PORT provided by Render
+    # Удаляем кастомный HTTP-сервер — он не нужен
     port = int(os.environ.get('PORT', 8443))
     webhook_url = os.getenv('RENDER_EXTERNAL_URL', '').rstrip('/')
     
     if webhook_url and "render.com" in webhook_url:
         full_webhook_url = f"{webhook_url}/webhook"
         logger.info(f"🔗 PRO Webhook URL: {full_webhook_url}")
-        await application.bot.set_webhook(url=full_webhook_url)
-        await application.updater.start_webhook(
+        # Используем run_webhook — он сам всё инициализирует
+        await application.run_webhook(
             listen="0.0.0.0",
             port=port,
             webhook_url=full_webhook_url,
@@ -1335,7 +1334,7 @@ async def main():
         )
     else:
         logger.info("🔍 PRO Starting in polling mode...")
-        await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        await application.run_polling(allowed_updates=Update.ALL_TYPES)
 
     try:
         await asyncio.Event().wait()
@@ -1347,3 +1346,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
