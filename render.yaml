@@ -10,9 +10,7 @@ services:
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         value: 7993604333:AAEA-QABJ5wkSgXkiwZJhqqSbuKdqSF4DDw
-      - key: MONGODB_URI
-        value: mongodb+srv://felixalseny_db_user:kontraktaciA22@felix22.3nx1ibi.mongodb.net/risk_bot_pro?retryWrites=true&w=majority&appName=Felix22
       - key: RENDER_EXTERNAL_URL
         value: https://risk-management-bot-pro.onrender.com
-    healthCheckPath: /health
+    healthCheckPath: /
     autoDeploy: true
