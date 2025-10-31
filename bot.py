@@ -7,7 +7,7 @@ import functools
 import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -60,6 +60,82 @@ except Exception as e:
     logger.error(f"❌ MongoDB connection failed: {e}")
     users_collection = None
     portfolio_collection = None
+
+# Ultra-fast cache manager
+class FastCache:
+    def __init__(self, max_size=500, ttl=300):
+        self.cache = {}
+        self.max_size = max_size
+        self.ttl = ttl
+
+    def get(self, key):
+        if key in self.cache:
+            data, timestamp = self.cache[key]
+            if time.time() - timestamp < self.ttl:
+                return data
+            else:
+                del self.cache[key]
+        return None
+
+    def set(self, key, value):
+        if len(self.cache) >= self.max_size:
+            self.cache.clear()
+        self.cache[key] = (value, time.time())
+
+# Global cache
+fast_cache = FastCache()
+
+# Performance logging decorator
+def log_performance(func):
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = await func(*args, **kwargs)
+        execution_time = time.time() - start_time
+        if execution_time > 1.0:
+            logger.warning(f"Slow operation: {func.__name__} took {execution_time:.2f}s")
+        return result
+    return wrapper
+
+# Constants
+INSTRUMENT_TYPES = {
+    'forex': 'Forex',
+    'crypto': 'Криптовалюты', 
+    'indices': 'Индексы',
+    'commodities': 'Товары',
+    'metals': 'Металлы'
+}
+
+INSTRUMENT_PRESETS = {
+    'forex': ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCAD', 'AUDUSD', 'NZDUSD', 'EURGBP'],
+    'crypto': ['BTCUSD', 'ETHUSD', 'XRPUSD', 'ADAUSD', 'SOLUSD', 'DOTUSD'],
+    'indices': ['US30', 'NAS100', 'SPX500', 'DAX40', 'FTSE100'],
+    'commodities': ['OIL', 'NATGAS', 'COPPER', 'GOLD'],
+    'metals': ['XAUUSD', 'XAGUSD', 'XPTUSD']
+}
+
+PIP_VALUES = {
+    'EURUSD': 10, 'GBPUSD': 10, 'USDJPY': 9, 'USDCHF': 10,
+    'USDCAD': 10, 'AUDUSD': 10, 'NZDUSD': 10, 'EURGBP': 10,
+    'BTCUSD': 1, 'ETHUSD': 1, 'XRPUSD': 10, 'ADAUSD': 10,
+    'DOTUSD': 1, 'SOLUSD': 1,
+    'US30': 1, 'NAS100': 1, 'SPX500': 1, 'DAX40': 1,
+    'FTSE100': 1,
+    'OIL': 10, 'NATGAS': 10, 'COPPER': 10, 'GOLD': 10,
+    'XAUUSD': 10, 'XAGUSD': 50, 'XPTUSD': 10
+}
+
+CONTRACT_SIZES = {
+    'forex': 100000,
+    'crypto': 1,
+    'indices': 1,
+    'commodities': 100,
+    'metals': 100
+}
+
+LEVERAGES = ['1:10', '1:20', '1:50', '1:100', '1:200', '1:500', '1:1000']
+RISK_LEVELS = ['2%', '5%', '10%', '15%', '20%', '25%']
+TRADE_DIRECTIONS = ['BUY', 'SELL']
 
 class MongoDBManager:
     @staticmethod
@@ -367,8 +443,6 @@ async def start_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TY
 @log_performance
 async def start_quick_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start quick calculation"""
-    # For now, we'll use the same as pro calculation but with default parameters
-    # In a real bot, you might simplify the steps
     await update.callback_query.edit_message_text(
         "⚡ *Быстрый расчет*\n\n"
         "Эта функция в разработке. Используйте профессиональный расчет для полного анализа.",
@@ -657,6 +731,72 @@ async def portfolio_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return await show_portfolio_menu(update, context)
 
 # === ANALYTICS HANDLERS ===
+
+# Analytics Engine
+class AnalyticsEngine:
+    @staticmethod
+    def calculate_risk_reward_analysis(trades: List[Dict]) -> Dict[str, Any]:
+        closed_trades = [t for t in trades if t.get('status') == 'closed']
+        if not closed_trades:
+            return {
+                'average_risk_reward': 0,
+                'best_trade': 0,
+                'worst_trade': 0,
+                'consistency_score': 0,
+                'risk_score': 0
+            }
+        risk_reward_ratios = []
+        profits = []
+        for trade in closed_trades:
+            risk = trade.get('risk_amount', 0)
+            profit = trade.get('profit', 0)
+            if risk > 0:
+                risk_reward_ratios.append(abs(profit / risk))
+            profits.append(profit)
+        return {
+            'average_risk_reward': sum(risk_reward_ratios) / len(risk_reward_ratios) if risk_reward_ratios else 0,
+            'best_trade': max(profits) if profits else 0,
+            'worst_trade': min(profits) if profits else 0,
+            'consistency_score': AnalyticsEngine.calculate_consistency(profits),
+            'risk_score': AnalyticsEngine.calculate_risk_score(profits)
+        }
+
+    @staticmethod
+    def calculate_consistency(profits: List[float]) -> float:
+        if len(profits) < 2:
+            return 0
+        positive_profits = [p for p in profits if p > 0]
+        if not positive_profits:
+            return 0
+        return (len(positive_profits) / len(profits)) * 100
+
+    @staticmethod
+    def calculate_risk_score(profits: List[float]) -> float:
+        if not profits:
+            return 0
+        avg_profit = sum(profits) / len(profits)
+        if avg_profit == 0:
+            return 0
+        positive_count = len([p for p in profits if p > 0])
+        return (positive_count / len(profits)) * 100
+
+    @staticmethod
+    def generate_strategy_recommendations(portfolio: Dict) -> List[str]:
+        recommendations = []
+        performance = portfolio.get('performance', {})
+        win_rate = performance.get('win_rate', 0)
+        avg_profit = performance.get('average_profit', 0)
+        avg_loss = performance.get('average_loss', 0)
+        if win_rate < 40:
+            recommendations.append("📉 Рассмотрите снижение риска на сделку до 1-2%")
+            recommendations.append("🎯 Увеличьте соотношение риск/вознаграждение до 1:3")
+        if avg_profit < abs(avg_loss) and win_rate > 50:
+            recommendations.append("⚡ Улучшите управление позицией - фиксируйте прибыль раньше")
+        if len(portfolio.get('allocation', {})) < 3:
+            recommendations.append("🌐 Диверсифицируйте портфель - торгуйте разные инструменты")
+        if not recommendations:
+            recommendations.append("✅ Ваша стратегия показывает хорошие результаты! Продолжайте в том же духе")
+        return recommendations
 
 @log_performance
 async def analytics_risk_reward(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1148,230 +1288,6 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text("❌ Пожалуйста, введите корректные числа для распределения объема:")
         return VOLUME_DISTRIBUTION
 
-@log_performance
-async def show_calculation_results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show final calculation results"""
-    user_data = context.user_data
-    
-    # Extract all parameters
-    instrument_type = user_data.get('instrument_type', 'forex')
-    currency_pair = user_data.get('currency_pair', 'EURUSD')
-    direction = user_data.get('direction', 'BUY')
-    risk_percent = user_data.get('risk_percent', 0.02)
-    deposit = user_data.get('deposit', 1000)
-    leverage = user_data.get('leverage', '1:100')
-    entry_price = user_data.get('entry_price', 1.0)
-    stop_loss = user_data.get('stop_loss', 0.9)
-    take_profits = user_data.get('take_profits', [1.1])
-    volume_distribution = user_data.get('volume_distribution', [100])
-    
-    # Calculate position size and risk
-    calculation_result = FastRiskCalculator.calculate_position_size_fast(
-        deposit=deposit,
-        leverage=leverage,
-        instrument_type=instrument_type,
-        currency_pair=currency_pair,
-        entry_price=entry_price,
-        stop_loss=stop_loss,
-        direction=direction,
-        risk_percent=risk_percent
-    )
-    
-    position_size = calculation_result['position_size']
-    risk_amount = calculation_result['risk_amount']
-    stop_pips = calculation_result['stop_pips']
-    required_margin = calculation_result['required_margin']
-    free_margin = calculation_result['free_margin']
-    
-    # Calculate profits for each take profit level
-    profit_calculations = FastRiskCalculator.calculate_profits_fast(
-        instrument_type=instrument_type,
-        currency_pair=currency_pair,
-        entry_price=entry_price,
-        take_profits=take_profits,
-        position_size=position_size,
-        volume_distribution=volume_distribution,
-        direction=direction
-    )
-    
-    # Build results text
-    results_text = f"""
-🎯 *РЕЗУЛЬТАТЫ РАСЧЕТА*
-
-*Основные параметры:*
-• Инструмент: {currency_pair} ({INSTRUMENT_TYPES.get(instrument_type, instrument_type)})
-• Направление: {direction}
-• Депозит: ${deposit:,.2f}
-• Плечо: {leverage}
-• Риск: {risk_percent*100}% (${risk_amount:.2f})
-
-*Цены:*
-• Вход: {entry_price}
-• Стоп-лосс: {stop_loss}
-• Расстояние: {stop_pips:.1f} пунктов
-
-*Позиция:*
-• Размер позиции: {position_size:.2f} лотов
-• Требуемая маржа: ${required_margin:.2f}
-• Свободная маржа: ${free_margin:.2f}
-
-*Тейк-профиты:*
-"""
-    
-    for i, profit_calc in enumerate(profit_calculations):
-        results_text += f"""
-TP{profit_calc['level']}:
-  • Цена: {profit_calc['price']}
-  • Объем: {profit_calc['volume_percent']}% ({profit_calc['volume_lots']:.2f} лотов)
-  • Профит: ${profit_calc['profit']:.2f}
-  • ROI: {profit_calc['roi_percent']:.1f}%
-"""
-    
-    total_profit = profit_calculations[-1]['cumulative_profit'] if profit_calculations else 0
-    risk_reward_ratio = total_profit / risk_amount if risk_amount > 0 else 0
-    
-    results_text += f"""
-*Итоги:*
-• Общий потенциальный профит: ${total_profit:.2f}
-• Соотношение R/R: {risk_reward_ratio:.2f}:1
-• Риск на сделку: {risk_percent*100}% от депозита
-"""
-    
-    # Add recommendation based on risk/reward
-    if risk_reward_ratio >= 2:
-        results_text += "\n✅ *Отличное соотношение риск/вознаграждение!*"
-    elif risk_reward_ratio >= 1:
-        results_text += "\n⚠️ *Соотношение приемлемое, но можно улучшить.*"
-    else:
-        results_text += "\n❌ *Соотношение риск/вознаграждение неблагоприятное!*"
-    
-    keyboard = [
-        [InlineKeyboardButton("💾 Сохранить в портфель", callback_data="save_to_portfolio")],
-        [InlineKeyboardButton("🔄 Новый расчет", callback_data="pro_calculation")],
-        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-    ]
-    
-    if update.message:
-        await update.message.reply_text(
-            results_text,
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    else:
-        await update.callback_query.edit_message_text(
-            results_text,
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    
-    return MAIN_MENU
-
-# Constants
-INSTRUMENT_TYPES = {
-    'forex': 'Forex',
-    'crypto': 'Криптовалюты', 
-    'indices': 'Индексы',
-    'commodities': 'Товары',
-    'metals': 'Металлы'
-}
-
-INSTRUMENT_PRESETS = {
-    'forex': ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCAD', 'AUDUSD', 'NZDUSD', 'EURGBP'],
-    'crypto': ['BTCUSD', 'ETHUSD', 'XRPUSD', 'ADAUSD', 'SOLUSD', 'DOTUSD'],
-    'indices': ['US30', 'NAS100', 'SPX500', 'DAX40', 'FTSE100'],
-    'commodities': ['OIL', 'NATGAS', 'COPPER', 'GOLD'],
-    'metals': ['XAUUSD', 'XAGUSD', 'XPTUSD']
-}
-
-PIP_VALUES = {
-    'EURUSD': 10, 'GBPUSD': 10, 'USDJPY': 9, 'USDCHF': 10,
-    'USDCAD': 10, 'AUDUSD': 10, 'NZDUSD': 10, 'EURGBP': 10,
-    'BTCUSD': 1, 'ETHUSD': 1, 'XRPUSD': 10, 'ADAUSD': 10,
-    'DOTUSD': 1, 'SOLUSD': 1,
-    'US30': 1, 'NAS100': 1, 'SPX500': 1, 'DAX40': 1,
-    'FTSE100': 1,
-    'OIL': 10, 'NATGAS': 10, 'COPPER': 10, 'GOLD': 10,
-    'XAUUSD': 10, 'XAGUSD': 50, 'XPTUSD': 10
-}
-
-CONTRACT_SIZES = {
-    'forex': 100000,
-    'crypto': 1,
-    'indices': 1,
-    'commodities': 100,
-    'metals': 100
-}
-
-LEVERAGES = ['1:10', '1:20', '1:50', '1:100', '1:200', '1:500', '1:1000']
-RISK_LEVELS = ['2%', '5%', '10%', '15%', '20%', '25%']
-TRADE_DIRECTIONS = ['BUY', 'SELL']
-
-# Analytics Engine
-class AnalyticsEngine:
-    @staticmethod
-    def calculate_risk_reward_analysis(trades: List[Dict]) -> Dict[str, Any]:
-        closed_trades = [t for t in trades if t.get('status') == 'closed']
-        if not closed_trades:
-            return {
-                'average_risk_reward': 0,
-                'best_trade': 0,
-                'worst_trade': 0,
-                'consistency_score': 0,
-                'risk_score': 0
-            }
-        risk_reward_ratios = []
-        profits = []
-        for trade in closed_trades:
-            risk = trade.get('risk_amount', 0)
-            profit = trade.get('profit', 0)
-            if risk > 0:
-                risk_reward_ratios.append(abs(profit / risk))
-            profits.append(profit)
-        return {
-            'average_risk_reward': sum(risk_reward_ratios) / len(risk_reward_ratios) if risk_reward_ratios else 0,
-            'best_trade': max(profits) if profits else 0,
-            'worst_trade': min(profits) if profits else 0,
-            'consistency_score': AnalyticsEngine.calculate_consistency(profits),
-            'risk_score': AnalyticsEngine.calculate_risk_score(profits)
-        }
-
-    @staticmethod
-    def calculate_consistency(profits: List[float]) -> float:
-        if len(profits) < 2:
-            return 0
-        positive_profits = [p for p in profits if p > 0]
-        if not positive_profits:
-            return 0
-        return (len(positive_profits) / len(profits)) * 100
-
-    @staticmethod
-    def calculate_risk_score(profits: List[float]) -> float:
-        if not profits:
-            return 0
-        avg_profit = sum(profits) / len(profits)
-        if avg_profit == 0:
-            return 0
-        positive_count = len([p for p in profits if p > 0])
-        return (positive_count / len(profits)) * 100
-
-    @staticmethod
-    def generate_strategy_recommendations(portfolio: Dict) -> List[str]:
-        recommendations = []
-        performance = portfolio.get('performance', {})
-        win_rate = performance.get('win_rate', 0)
-        avg_profit = performance.get('average_profit', 0)
-        avg_loss = performance.get('average_loss', 0)
-        if win_rate < 40:
-            recommendations.append("📉 Рассмотрите снижение риска на сделку до 1-2%")
-            recommendations.append("🎯 Увеличьте соотношение риск/вознаграждение до 1:3")
-        if avg_profit < abs(avg_loss) and win_rate > 50:
-            recommendations.append("⚡ Улучшите управление позицией - фиксируйте прибыль раньше")
-        if len(portfolio.get('allocation', {})) < 3:
-            recommendations.append("🌐 Диверсифицируйте портфель - торгуйте разные инструменты")
-        if not recommendations:
-            recommendations.append("✅ Ваша стратегия показывает хорошие результаты! Продолжайте в том же духе")
-        return recommendations
-
 # Ultra-fast risk calculator
 class FastRiskCalculator:
     @staticmethod
@@ -1499,41 +1415,123 @@ class FastRiskCalculator:
             })
         return profits
 
-# Ultra-fast cache manager
-class FastCache:
-    def __init__(self, max_size=500, ttl=300):
-        self.cache = {}
-        self.max_size = max_size
-        self.ttl = ttl
+@log_performance
+async def show_calculation_results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show final calculation results"""
+    user_data = context.user_data
+    
+    # Extract all parameters
+    instrument_type = user_data.get('instrument_type', 'forex')
+    currency_pair = user_data.get('currency_pair', 'EURUSD')
+    direction = user_data.get('direction', 'BUY')
+    risk_percent = user_data.get('risk_percent', 0.02)
+    deposit = user_data.get('deposit', 1000)
+    leverage = user_data.get('leverage', '1:100')
+    entry_price = user_data.get('entry_price', 1.0)
+    stop_loss = user_data.get('stop_loss', 0.9)
+    take_profits = user_data.get('take_profits', [1.1])
+    volume_distribution = user_data.get('volume_distribution', [100])
+    
+    # Calculate position size and risk
+    calculation_result = FastRiskCalculator.calculate_position_size_fast(
+        deposit=deposit,
+        leverage=leverage,
+        instrument_type=instrument_type,
+        currency_pair=currency_pair,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        direction=direction,
+        risk_percent=risk_percent
+    )
+    
+    position_size = calculation_result['position_size']
+    risk_amount = calculation_result['risk_amount']
+    stop_pips = calculation_result['stop_pips']
+    required_margin = calculation_result['required_margin']
+    free_margin = calculation_result['free_margin']
+    
+    # Calculate profits for each take profit level
+    profit_calculations = FastRiskCalculator.calculate_profits_fast(
+        instrument_type=instrument_type,
+        currency_pair=currency_pair,
+        entry_price=entry_price,
+        take_profits=take_profits,
+        position_size=position_size,
+        volume_distribution=volume_distribution,
+        direction=direction
+    )
+    
+    # Build results text
+    results_text = f"""
+🎯 *РЕЗУЛЬТАТЫ РАСЧЕТА*
 
-    def get(self, key):
-        if key in self.cache:
-            data, timestamp = self.cache[key]
-            if time.time() - timestamp < self.ttl:
-                return data
-            else:
-                del self.cache[key]
-        return None
+*Основные параметры:*
+• Инструмент: {currency_pair} ({INSTRUMENT_TYPES.get(instrument_type, instrument_type)})
+• Направление: {direction}
+• Депозит: ${deposit:,.2f}
+• Плечо: {leverage}
+• Риск: {risk_percent*100}% (${risk_amount:.2f})
 
-    def set(self, key, value):
-        if len(self.cache) >= self.max_size:
-            self.cache.clear()
-        self.cache[key] = (value, time.time())
+*Цены:*
+• Вход: {entry_price}
+• Стоп-лосс: {stop_loss}
+• Расстояние: {stop_pips:.1f} пунктов
 
-# Global cache
-fast_cache = FastCache()
+*Позиция:*
+• Размер позиции: {position_size:.2f} лотов
+• Требуемая маржа: ${required_margin:.2f}
+• Свободная маржа: ${free_margin:.2f}
 
-# Performance logging decorator
-def log_performance(func):
-    @functools.wraps(func)
-    async def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = await func(*args, **kwargs)
-        execution_time = time.time() - start_time
-        if execution_time > 1.0:
-            logger.warning(f"Slow operation: {func.__name__} took {execution_time:.2f}s")
-        return result
-    return wrapper
+*Тейк-профиты:*
+"""
+    
+    for i, profit_calc in enumerate(profit_calculations):
+        results_text += f"""
+TP{profit_calc['level']}:
+  • Цена: {profit_calc['price']}
+  • Объем: {profit_calc['volume_percent']}% ({profit_calc['volume_lots']:.2f} лотов)
+  • Профит: ${profit_calc['profit']:.2f}
+  • ROI: {profit_calc['roi_percent']:.1f}%
+"""
+    
+    total_profit = profit_calculations[-1]['cumulative_profit'] if profit_calculations else 0
+    risk_reward_ratio = total_profit / risk_amount if risk_amount > 0 else 0
+    
+    results_text += f"""
+*Итоги:*
+• Общий потенциальный профит: ${total_profit:.2f}
+• Соотношение R/R: {risk_reward_ratio:.2f}:1
+• Риск на сделку: {risk_percent*100}% от депозита
+"""
+    
+    # Add recommendation based on risk/reward
+    if risk_reward_ratio >= 2:
+        results_text += "\n✅ *Отличное соотношение риск/вознаграждение!*"
+    elif risk_reward_ratio >= 1:
+        results_text += "\n⚠️ *Соотношение приемлемое, но можно улучшить.*"
+    else:
+        results_text += "\n❌ *Соотношение риск/вознаграждение неблагоприятное!*"
+    
+    keyboard = [
+        [InlineKeyboardButton("💾 Сохранить в портфель", callback_data="save_to_portfolio")],
+        [InlineKeyboardButton("🔄 Новый расчет", callback_data="pro_calculation")],
+        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+    ]
+    
+    if update.message:
+        await update.message.reply_text(
+            results_text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            results_text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    return MAIN_MENU
 
 # Главная функция запуска
 def main():
