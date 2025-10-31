@@ -41,6 +41,75 @@ logger = logging.getLogger(__name__)
 # Temporary storage
 user_data: Dict[int, Dict[str, Any]] = {}
 
+# MongoDB Connection
+MONGO_URI = os.getenv('MONGODB_URI', 'mongodb+srv://felixalseny_db_user:kontraktaciA22@felix22.3nx1ibi.mongodb.net/risk_bot_pro?retryWrites=true&w=majority&appName=Felix22')
+try:
+    mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    mongo_client.server_info()  # Test connection
+    db = mongo_client.risk_bot
+    users_collection = db.users
+    portfolio_collection = db.portfolios
+    logger.info("✅ MongoDB connected successfully!")
+except Exception as e:
+    logger.error(f"❌ MongoDB connection failed: {e}")
+    # Fallback to in-memory storage
+    users_collection = None
+    portfolio_collection = None
+
+# MongoDB Manager
+class MongoDBManager:
+    @staticmethod
+    def get_user_data(user_id: int) -> Dict[str, Any]:
+        """Get user data from MongoDB"""
+        if not users_collection:
+            return {}
+        try:
+            user_data = users_collection.find_one({"user_id": user_id})
+            return user_data.get('data', {}) if user_data else {}
+        except Exception as e:
+            logger.error(f"Error getting user data: {e}")
+            return {}
+    
+    @staticmethod
+    def update_user_data(user_id: int, data: Dict[str, Any]):
+        """Update user data in MongoDB"""
+        if not users_collection:
+            return
+        try:
+            users_collection.update_one(
+                {"user_id": user_id},
+                {"$set": {"data": data, "last_updated": datetime.now()}},
+                upsert=True
+            )
+        except Exception as e:
+            logger.error(f"Error updating user data: {e}")
+    
+    @staticmethod
+    def get_portfolio(user_id: int) -> Dict[str, Any]:
+        """Get portfolio from MongoDB"""
+        if not portfolio_collection:
+            return {}
+        try:
+            portfolio = portfolio_collection.find_one({"user_id": user_id})
+            return portfolio.get('portfolio_data', {}) if portfolio else {}
+        except Exception as e:
+            logger.error(f"Error getting portfolio: {e}")
+            return {}
+    
+    @staticmethod
+    def update_portfolio(user_id: int, portfolio_data: Dict[str, Any]):
+        """Update portfolio in MongoDB"""
+        if not portfolio_collection:
+            return
+        try:
+            portfolio_collection.update_one(
+                {"user_id": user_id},
+                {"$set": {"portfolio_data": portfolio_data, "last_updated": datetime.now()}},
+                upsert=True
+            )
+        except Exception as e:
+            logger.error(f"Error updating portfolio: {e}")
+
 # Portfolio Data Management
 class PortfolioManager:
     @staticmethod
@@ -129,6 +198,25 @@ class PortfolioManager:
         
         MongoDBManager.update_portfolio(user_id, portfolio_data)
     
+    @staticmethod
+    def add_balance_operation(user_id: int, operation_type: str, amount: float, description: str = ""):
+        portfolio_data = PortfolioManager.initialize_user_portfolio(user_id)
+        
+        portfolio_data['history'].append({
+            'type': 'balance',
+            'action': operation_type,
+            'amount': amount,
+            'description': description,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        if operation_type == 'deposit':
+            portfolio_data['current_balance'] += amount
+            if portfolio_data['initial_balance'] == 0:
+                portfolio_data['initial_balance'] = amount
+        
+        MongoDBManager.update_portfolio(user_id, portfolio_data)
+
 # Flask server for health checks
 app = Flask(__name__)
 
@@ -173,7 +261,7 @@ logger.info("✅ Flask health check server started!")
 def keep_alive():
     """Ping our own health endpoint to prevent sleeping"""
     try:
-        bot_url = os.getenv('RENDER_EXTERNAL_URL', '')
+        bot_url = os.getenv('RENDER_EXTERNAL_URL', 'https://risk-management-bot-pro.onrender.com')
         if bot_url:
             response = requests.get(f"{bot_url}/health", timeout=10)
             if response.status_code == 200:
@@ -196,23 +284,6 @@ def schedule_runner():
 schedule_thread = threading.Thread(target=schedule_runner, daemon=True)
 schedule_thread.start()
 logger.info("✅ Keep-alive scheduler started!")
-
-    @staticmethod
-    def add_balance_operation(user_id: int, operation_type: str, amount: float, description: str = ""):
-        PortfolioManager.initialize_user_portfolio(user_id)
-        
-        user_data[user_id]['portfolio']['history'].append({
-            'type': 'balance',
-            'action': operation_type,
-            'amount': amount,
-            'description': description,
-            'timestamp': datetime.now().isoformat()
-        })
-        
-        if operation_type == 'deposit':
-            user_data[user_id]['portfolio']['current_balance'] += amount
-            if user_data[user_id]['portfolio']['initial_balance'] == 0:
-                user_data[user_id]['portfolio']['initial_balance'] = amount
 
 # Analytics Engine
 class AnalyticsEngine:
@@ -320,6 +391,18 @@ class FastCache:
 # Global cache
 fast_cache = FastCache()
 
+# Performance logging decorator
+def log_performance(func):
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = await func(*args, **kwargs)
+        execution_time = time.time() - start_time
+        if execution_time > 1.0:
+            logger.warning(f"Slow operation: {func.__name__} took {execution_time:.2f}s")
+        return result
+    return wrapper
+
 # Constants
 INSTRUMENT_TYPES = {
     'forex': 'Forex',
@@ -342,30 +425,16 @@ PIP_VALUES = {
     # Forex - major pairs
     'EURUSD': 10, 'GBPUSD': 10, 'USDJPY': 9, 'USDCHF': 10,
     'USDCAD': 10, 'AUDUSD': 10, 'NZDUSD': 10, 'EURGBP': 10,
-    'EURJPY': 9, 'GBPJPY': 9, 'EURCHF': 10, 'AUDJPY': 9,
-    'NZDJPY': 9, 'CADJPY': 9, 'CHFJPY': 9, 'GBPCAD': 10,
-    'GBPAUD': 10, 'GBPNZD': 10, 'EURAUD': 10, 'EURCAD': 10,
-    'EURNZD': 10, 'AUDCAD': 10, 'AUDCHF': 10, 'AUDNZD': 10,
-    'CADCHF': 10, 'NZDCAD': 10, 'NZDCHF': 10,
-    # Forex - exotic pairs
-    'USDSEK': 10, 'USDDKK': 10, 'USDNOK': 10, 'USDPLN': 10,
-    'USDCZK': 10, 'USDHUF': 10, 'USDRON': 10, 'USDTRY': 10,
-    'USDZAR': 10, 'USDMXN': 10, 'USDSGD': 10, 'USDHKD': 10,
     # Cryptocurrencies
     'BTCUSD': 1, 'ETHUSD': 1, 'XRPUSD': 10, 'ADAUSD': 10,
-    'DOTUSD': 1, 'LTCUSD': 1, 'BCHUSD': 1, 'LINKUSD': 1,
-    'BNBUSD': 1, 'SOLUSD': 1, 'DOGEUSD': 10, 'MATICUSD': 10,
-    'AVAXUSD': 1, 'ATOMUSD': 1, 'UNIUSD': 1, 'XLMUSD': 10,
+    'DOTUSD': 1, 'SOLUSD': 1,
     # Indices
     'US30': 1, 'NAS100': 1, 'SPX500': 1, 'DAX40': 1,
-    'FTSE100': 1, 'NIKKEI225': 1, 'ASX200': 1, 'CAC40': 1,
-    'ESTX50': 1, 'HSI': 1, 'SENSEX': 1, 'IBOVESPA': 1,
+    'FTSE100': 1,
     # Commodities
-    'OIL': 10, 'NATGAS': 10, 'COPPER': 10, 'WHEAT': 10,
-    'CORN': 10, 'SOYBEAN': 10, 'SUGAR': 10, 'COFFEE': 10,
+    'OIL': 10, 'NATGAS': 10, 'COPPER': 10, 'GOLD': 10,
     # Metals
-    'XAUUSD': 10, 'XAGUSD': 50, 'XPTUSD': 10, 'XPDUSD': 10,
-    'XAUAUD': 10, 'XAUEUR': 10, 'XAGGBP': 50
+    'XAUUSD': 10, 'XAGUSD': 50, 'XPTUSD': 10
 }
 
 CONTRACT_SIZES = {
@@ -523,20 +592,7 @@ class FastRiskCalculator:
             
         return profits
 
-# Performance logging decorator
-def log_performance(func):
-    @functools.wraps(func)
-    async def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = await func(*args, **kwargs)
-        execution_time = time.time() - start_time
-        if execution_time > 1.0:
-            logger.warning(f"Slow operation: {func.__name__} took {execution_time:.2f}s")
-        return result
-    return wrapper
-
 # Main command handlers
-@log_performance
 @log_performance
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Main menu"""
@@ -594,6 +650,57 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     return MAIN_MENU
+
+@log_performance
+async def quick_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Quick calculation command"""
+    return await start_quick_calculation(update, context)
+
+@log_performance
+async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Portfolio menu"""
+    query = update.callback_query
+    user_id = query.from_user.id if query else update.message.from_user.id
+    
+    # Initialize portfolio for user
+    PortfolioManager.initialize_user_portfolio(user_id)
+    
+    portfolio_text = """
+💼 *Мой Портфель*
+
+📊 *Доступные функции:*
+• 📈 Обзор сделок
+• 💰 Баланс и распределение
+• 📊 Анализ эффективности
+• 🔄 История операций
+• ➕ Добавить сделку/депозит
+
+Выберите опцию:
+"""
+    
+    keyboard = [
+        [InlineKeyboardButton("📈 Мои сделки", callback_data="portfolio_trades")],
+        [InlineKeyboardButton("💰 Баланс", callback_data="portfolio_balance")],
+        [InlineKeyboardButton("📊 Эффективность", callback_data="portfolio_performance")],
+        [InlineKeyboardButton("🔄 История", callback_data="portfolio_history")],
+        [InlineKeyboardButton("➕ Добавить сделку", callback_data="portfolio_add_trade")],
+        [InlineKeyboardButton("💸 Внести депозит", callback_data="portfolio_deposit")],
+        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+    ]
+    
+    if update.message:
+        await update.message.reply_text(
+            portfolio_text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await query.edit_message_text(
+            portfolio_text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    return PORTFOLIO_MENU
 
 @log_performance
 async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -697,8 +804,8 @@ async def portfolio_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     
-    portfolio = user_data[user_id].get('portfolio', {})
-    trades = portfolio.get('trades', [])
+    portfolio_data = MongoDBManager.get_portfolio(user_id)
+    trades = portfolio_data.get('trades', [])
     
     if not trades:
         await query.edit_message_text(
@@ -743,15 +850,15 @@ async def portfolio_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     
-    portfolio = user_data[user_id].get('portfolio', {})
-    allocation = portfolio.get('allocation', {})
-    performance = portfolio.get('performance', {})
+    portfolio_data = MongoDBManager.get_portfolio(user_id)
+    allocation = portfolio_data.get('allocation', {})
+    performance = portfolio_data.get('performance', {})
     
     balance_text = "💰 *Баланс и распределение*\n\n"
     
     # Balance information
-    initial_balance = portfolio.get('initial_balance', 0)
-    current_balance = portfolio.get('current_balance', 0)
+    initial_balance = portfolio_data.get('initial_balance', 0)
+    current_balance = portfolio_data.get('current_balance', 0)
     total_profit = performance.get('total_profit', 0)
     total_loss = performance.get('total_loss', 0)
     net_profit = total_profit + total_loss
@@ -783,8 +890,8 @@ async def portfolio_performance(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     user_id = query.from_user.id
     
-    portfolio = user_data[user_id].get('portfolio', {})
-    performance = portfolio.get('performance', {})
+    portfolio_data = MongoDBManager.get_portfolio(user_id)
+    performance = portfolio_data.get('performance', {})
     
     perf_text = "📊 *Анализ эффективности*\n\n"
     
@@ -801,7 +908,7 @@ async def portfolio_performance(update: Update, context: ContextTypes.DEFAULT_TY
     
     # Risk analysis
     risk_reward_data = AnalyticsEngine.calculate_risk_reward_analysis(
-        portfolio.get('trades', [])
+        portfolio_data.get('trades', [])
     )
     
     perf_text += f"⚡ Соотношение риск/вознаграждение: {risk_reward_data['average_risk_reward']:.2f}\n"
@@ -809,7 +916,7 @@ async def portfolio_performance(update: Update, context: ContextTypes.DEFAULT_TY
     perf_text += f"🔻 Худшая сделка: ${risk_reward_data['worst_trade']:.2f}\n\n"
     
     # Recommendations
-    recommendations = AnalyticsEngine.generate_strategy_recommendations(portfolio)
+    recommendations = AnalyticsEngine.generate_strategy_recommendations(portfolio_data)
     if recommendations:
         perf_text += "💡 *Рекомендации:*\n"
         for rec in recommendations[:3]:  # Show top 3 recommendations
@@ -830,8 +937,8 @@ async def portfolio_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     
-    portfolio = user_data[user_id].get('portfolio', {})
-    history = portfolio.get('history', [])
+    portfolio_data = MongoDBManager.get_portfolio(user_id)
+    history = portfolio_data.get('history', [])
     
     if not history:
         await query.edit_message_text(
@@ -926,7 +1033,6 @@ async def portfolio_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 Назад к портфелю", callback_data="portfolio_back")]
         ])
     )
-
 # Analytics handlers
 @log_performance
 async def analytics_risk_reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -934,8 +1040,8 @@ async def analytics_risk_reward(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     user_id = query.from_user.id
     
-    portfolio = user_data[user_id].get('portfolio', {})
-    trades = portfolio.get('trades', [])
+    portfolio_data = MongoDBManager.get_portfolio(user_id)
+    trades = portfolio_data.get('trades', [])
     
     analysis = AnalyticsEngine.calculate_risk_reward_analysis(trades)
     
@@ -1002,8 +1108,8 @@ async def analytics_trade_stats(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     user_id = query.from_user.id
     
-    portfolio = user_data[user_id].get('portfolio', {})
-    performance = portfolio.get('performance', {})
+    portfolio_data = MongoDBManager.get_portfolio(user_id)
+    performance = portfolio_data.get('performance', {})
     
     stats_text = "📊 *Статистика Сделок*\n\n"
     
@@ -1073,8 +1179,8 @@ async def analytics_recommendations(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     user_id = query.from_user.id
     
-    portfolio = user_data[user_id].get('portfolio', {})
-    recommendations = AnalyticsEngine.generate_strategy_recommendations(portfolio)
+    portfolio_data = MongoDBManager.get_portfolio(user_id)
+    recommendations = AnalyticsEngine.generate_strategy_recommendations(portfolio_data)
     
     rec_text = "💡 *Интеллектуальные Рекомендации*\n\n"
     
@@ -1147,7 +1253,7 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     return MAIN_MENU
 
-# Professional calculation handlers - ACTIVATED
+# Professional calculation handlers
 @log_performance
 async def start_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start professional calculation"""
@@ -1197,7 +1303,8 @@ async def start_quick_calculation(update: Update, context: ContextTypes.DEFAULT_
 async def show_presets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show saved presets"""
     user_id = update.message.from_user.id
-    presets = user_data.get(user_id, {}).get('presets', [])
+    user_data_dict = MongoDBManager.get_user_data(user_id)
+    presets = user_data_dict.get('presets', [])
     
     if not presets:
         await update.message.reply_text(
@@ -1231,10 +1338,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
     return ConversationHandler.END
 
-# Professional calculation flow - ACTIVATED
+# Professional calculation flow
 @log_performance
 async def process_instrument_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process instrument type selection - ACTIVATED"""
+    """Process instrument type selection"""
     query = update.callback_query
     if not query:
         return INSTRUMENT_TYPE
@@ -1242,6 +1349,10 @@ async def process_instrument_type(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     user_id = query.from_user.id
     instrument_type = query.data.replace('inst_type_', '')
+    
+    if user_id not in user_data:
+        user_data[user_id] = {}
+    
     user_data[user_id]['instrument_type'] = instrument_type
     user_data[user_id]['last_activity'] = time.time()
     
@@ -1282,6 +1393,9 @@ async def process_currency_selection(update: Update, context: ContextTypes.DEFAU
     await query.answer()
     user_id = query.from_user.id
     currency = query.data.replace('currency_', '')
+    
+    if user_id not in user_data:
+        user_data[user_id] = {}
     
     user_data[user_id]['currency'] = currency
     user_data[user_id]['last_activity'] = time.time()
@@ -1361,6 +1475,9 @@ async def process_risk_percent(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = query.from_user.id
     risk_percent = query.data.replace('risk_', '').replace('%', '')
     
+    if user_id not in user_data:
+        user_data[user_id] = {}
+    
     user_data[user_id]['risk_percent'] = float(risk_percent) / 100
     user_data[user_id]['last_activity'] = time.time()
     
@@ -1389,6 +1506,9 @@ async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         deposit = float(deposit_text)
         if deposit <= 0:
             raise ValueError("Deposit must be positive")
+            
+        if user_id not in user_data:
+            user_data[user_id] = {}
             
         user_data[user_id]['deposit'] = deposit
         user_data[user_id]['last_activity'] = time.time()
@@ -1434,6 +1554,9 @@ async def process_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user_id = query.from_user.id
     leverage = query.data.replace('leverage_', '')
     
+    if user_id not in user_data:
+        user_data[user_id] = {}
+    
     user_data[user_id]['leverage'] = leverage
     user_data[user_id]['last_activity'] = time.time()
     
@@ -1463,6 +1586,9 @@ async def process_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         entry_price = float(entry_text)
         if entry_price <= 0:
             raise ValueError("Entry price must be positive")
+            
+        if user_id not in user_data:
+            user_data[user_id] = {}
             
         user_data[user_id]['entry'] = entry_price
         user_data[user_id]['last_activity'] = time.time()
@@ -1502,6 +1628,9 @@ async def process_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     try:
         stop_loss = float(stop_loss_text)
+        if user_id not in user_data:
+            user_data[user_id] = {}
+            
         entry_price = user_data[user_id].get('entry', 0)
         
         if stop_loss <= 0:
@@ -1572,6 +1701,9 @@ async def process_take_profits(update: Update, context: ContextTypes.DEFAULT_TYP
         tp_list = [float(tp.strip()) for tp in take_profits_text.split(',')]
         tp_list = tp_list[:3]  # Limit to 3 take profits
         
+        if user_id not in user_data:
+            user_data[user_id] = {}
+            
         # Validate take profits relative to entry and direction
         entry_price = user_data[user_id].get('entry', 0)
         direction = user_data[user_id].get('direction', 'BUY')
@@ -1637,6 +1769,10 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
     try:
         # Parse volume distribution
         volume_list = [float(vol.strip()) for vol in volume_text.split(',')]
+        
+        if user_id not in user_data:
+            user_data[user_id] = {}
+            
         take_profits = user_data[user_id].get('take_profits', [])
         
         if len(volume_list) != len(take_profits):
@@ -1692,9 +1828,12 @@ async def process_volume_distribution(update: Update, context: ContextTypes.DEFA
 @log_performance
 async def perform_pro_calculation(user_id: int) -> str:
     """Perform professional calculation and return formatted result"""
+    if user_id not in user_data:
+        return "❌ Ошибка: данные пользователя не найдены"
+    
     user_info = user_data[user_id]
     
-    # Extract parameters
+    # Extract parameters with defaults
     instrument_type = user_info.get('instrument_type', 'forex')
     currency = user_info.get('currency', 'EURUSD')
     direction = user_info.get('direction', 'BUY')
@@ -1788,6 +1927,9 @@ async def back_to_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     user_id = query.from_user.id
     
+    if user_id not in user_data:
+        user_data[user_id] = {}
+        
     instrument_type = user_data[user_id].get('instrument_type', 'forex')
     display_type = INSTRUMENT_TYPES.get(instrument_type, instrument_type)
     
@@ -1822,6 +1964,9 @@ async def back_to_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     user_id = query.from_user.id
     
+    if user_id not in user_data:
+        user_data[user_id] = {}
+        
     currency = user_data[user_id].get('currency', 'EURUSD')
     
     await query.edit_message_text(
@@ -1842,6 +1987,9 @@ async def back_to_risk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     query = update.callback_query
     user_id = query.from_user.id
     
+    if user_id not in user_data:
+        user_data[user_id] = {}
+        
     direction = user_data[user_id].get('direction', 'BUY')
     
     keyboard = []
@@ -1868,6 +2016,9 @@ async def back_to_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     user_id = query.from_user.id
     
+    if user_id not in user_data:
+        user_data[user_id] = {}
+        
     risk_percent = user_data[user_id].get('risk_percent', 0.02) * 100
     
     await query.edit_message_text(
@@ -1887,6 +2038,9 @@ async def back_to_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     user_id = query.from_user.id
     
+    if user_id not in user_data:
+        user_data[user_id] = {}
+        
     deposit = user_data[user_id].get('deposit', 10000)
     
     keyboard = []
@@ -1913,6 +2067,9 @@ async def back_to_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     query = update.callback_query
     user_id = query.from_user.id
     
+    if user_id not in user_data:
+        user_data[user_id] = {}
+        
     leverage = user_data[user_id].get('leverage', '1:100')
     currency = user_data[user_id].get('currency', 'инструмент')
     
@@ -1933,6 +2090,9 @@ async def back_to_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     user_id = query.from_user.id
     
+    if user_id not in user_data:
+        user_data[user_id] = {}
+        
     entry_price = user_data[user_id].get('entry', 1.0850)
     currency = user_data[user_id].get('currency', 'инструмент')
     
@@ -1953,6 +2113,9 @@ async def back_to_take_profits(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     user_id = query.from_user.id
     
+    if user_id not in user_data:
+        user_data[user_id] = {}
+        
     stop_loss = user_data[user_id].get('stop_loss', 1.0800)
     currency = user_data[user_id].get('currency', 'инструмент')
     
@@ -1991,6 +2154,9 @@ async def process_currency_input(update: Update, context: ContextTypes.DEFAULT_T
         return CUSTOM_INSTRUMENT
     
     # For demo, show calculation result
+    if user_id not in user_data:
+        user_data[user_id] = {}
+        
     user_data[user_id] = {
         'currency': currency,
         'instrument_type': 'forex',
@@ -2173,7 +2339,7 @@ def main():
 
     # Start bot
     port = int(os.environ.get('PORT', 10000))
-    webhook_url = os.getenv('RENDER_EXTERNAL_URL', '')
+    webhook_url = os.getenv('RENDER_EXTERNAL_URL', 'https://risk-management-bot-pro.onrender.com')
     
     logger.info(f"🌐 PRO Starting on port {port}")
     
@@ -2190,76 +2356,7 @@ def main():
             logger.info("🔄 PRO Starting in polling mode...")
             application.run_polling()
     except Exception as e:
-        logger.error(f"❌ Error starting PRO bot: 
-
-# MongoDB Connection
-MONGO_URI = os.getenv('MONGODB_URI', 'your_mongodb_connection_string_here')
-try:
-    mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    mongo_client.server_info()  # Test connection
-    db = mongo_client.risk_bot
-    users_collection = db.users
-    portfolio_collection = db.portfolios
-    logger.info("✅ MongoDB connected successfully!")
-except Exception as e:
-    logger.error(f"❌ MongoDB connection failed: {e}")
-    # Fallback to in-memory storage
-    users_collection = None
-    portfolio_collection = None
-
-# MongoDB Manager
-class MongoDBManager:
-    @staticmethod
-    def get_user_data(user_id: int) -> Dict[str, Any]:
-        """Get user data from MongoDB"""
-        if not users_collection:
-            return {}
-        try:
-            user_data = users_collection.find_one({"user_id": user_id})
-            return user_data.get('data', {}) if user_data else {}
-        except Exception as e:
-            logger.error(f"Error getting user data: {e}")
-            return {}
-    
-    @staticmethod
-    def update_user_data(user_id: int, data: Dict[str, Any]):
-        """Update user data in MongoDB"""
-        if not users_collection:
-            return
-        try:
-            users_collection.update_one(
-                {"user_id": user_id},
-                {"$set": {"data": data, "last_updated": datetime.now()}},
-                upsert=True
-            )
-        except Exception as e:
-            logger.error(f"Error updating user data: {e}")
-    
-    @staticmethod
-    def get_portfolio(user_id: int) -> Dict[str, Any]:
-        """Get portfolio from MongoDB"""
-        if not portfolio_collection:
-            return {}
-        try:
-            portfolio = portfolio_collection.find_one({"user_id": user_id})
-            return portfolio.get('portfolio_data', {}) if portfolio else {}
-        except Exception as e:
-            logger.error(f"Error getting portfolio: {e}")
-            return {}
-    
-    @staticmethod
-    def update_portfolio(user_id: int, portfolio_data: Dict[str, Any]):
-        """Update portfolio in MongoDB"""
-        if not portfolio_collection:
-            return
-        try:
-            portfolio_collection.update_one(
-                {"user_id": user_id},
-                {"$set": {"portfolio_data": portfolio_data, "last_updated": datetime.now()}},
-                upsert=True
-            )
-        except Exception as e:
-            logger.error(f"Error updating portfolio: {e}")
+        logger.error(f"❌ Error starting PRO bot: {e}")
 
 if __name__ == '__main__':
     main()
