@@ -2381,4 +2381,63 @@ def main():
             ADD_TRADE_VOLUME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_trade_volume)],
             ADD_TRADE_PROFIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_trade_profit)],
         },
-        fallbacks=[C
+        fallbacks=[CommandHandler('cancel', cancel)]
+    )
+
+    # Основной обработчик
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', start)],
+        states={
+            MAIN_MENU: [CallbackQueryHandler(handle_main_menu)],
+            SETTINGS_MENU: [CallbackQueryHandler(handle_main_menu)],
+            PORTFOLIO_MENU: [CallbackQueryHandler(handle_main_menu)],
+            ANALYTICS_MENU: [CallbackQueryHandler(handle_main_menu)],
+            DEPOSIT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_deposit_amount)],
+            EXPORT_CALCULATION: [CallbackQueryHandler(handle_main_menu)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)]
+    )
+
+    application.add_handler(pro_calc_conv)
+    application.add_handler(quick_calc_conv)
+    application.add_handler(add_trade_conv)
+    application.add_handler(conv_handler)
+
+    # Команды
+    application.add_handler(CommandHandler('info', pro_info_command))
+    application.add_handler(CommandHandler('help', pro_info_command))
+    application.add_handler(CommandHandler('portfolio', portfolio_command))
+    application.add_handler(CommandHandler('quick', start_quick_calculation))
+    application.add_handler(CommandHandler('settings', settings_command))
+    application.add_handler(CommandHandler('analytics', analytics_command))
+    application.add_handler(CommandHandler('cancel', cancel))
+
+    # Неизвестные команды
+    application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+
+    # Общий обработчик кнопок
+    application.add_handler(CallbackQueryHandler(handle_main_menu))
+
+    port = int(os.environ.get('PORT', 10000))
+    webhook_url = os.getenv('RENDER_EXTERNAL_URL', '')
+
+    logger.info(f"🌐 PRO v3.1 запускается на порту {port}")
+    try:
+        if webhook_url and "render.com" in webhook_url:
+            logger.info(f"🔗 PRO Webhook URL: {webhook_url}/webhook")
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=port,
+                url_path="/webhook",
+                webhook_url=webhook_url + "/webhook"
+            )
+        else:
+            logger.info("🔄 PRO запускается в режиме polling...")
+            application.run_polling()
+    except Exception as e:
+        logger.error(f"❌ Ошибка запуска PRO бота: {e}")
+        logger.info("🔄 PRO запускается в режиме polling (fallback)...")
+        application.run_polling()
+
+if __name__ == '__main__':
+    main()
