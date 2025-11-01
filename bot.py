@@ -659,7 +659,11 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return PORTFOLIO_MENU
     except Exception as e:
         logger.error(f"Ошибка в portfolio_command: {e}")
+        return ConversationHandler.END
 
+# Продолжение в следующем сообщении...<｜end▁of▁thinking｜>Продолжение кода:
+
+```python
 @log_performance
 async def portfolio_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать обзор сделок"""
@@ -1807,7 +1811,7 @@ async def quick_handle_take_profit(update: Update, context: ContextTypes.DEFAULT
             instrument_type=instrument_type,
             currency_pair=instrument,
             entry_price=context.user_data['entry_price'],
-            stop_loss=stop_loss,
+            stop_loss=context.user_data['stop_loss'],
             take_profit=take_profit,
             direction=context.user_data['direction'],
             risk_percent=context.user_data['risk_percent']
@@ -1826,7 +1830,7 @@ async def quick_handle_take_profit(update: Update, context: ContextTypes.DEFAULT
 
 💎 *Цены:*
 • Вход: {context.user_data['entry_price']}
-• Стоп-лосс: {stop_loss}
+• Стоп-лосс: {context.user_data['stop_loss']}
 • Тейк-профит: {take_profit}
 • Дистанция SL: {calculation['stop_pips']:.2f} пунктов
 • Дистанция TP: {calculation['take_profit_pips']:.2f} пунктов
@@ -1843,7 +1847,7 @@ async def quick_handle_take_profit(update: Update, context: ContextTypes.DEFAULT
 """
         
         keyboard = [
-            [InlineKeyboardButton("💾 Выгрузить расчет", callback_data="export_quick_calculation")],
+            [InlineKeyboardButton("💾 Выгрузить расчет", callback_data="export_calculation")],
             [InlineKeyboardButton("📊 Профессиональный расчет", callback_data="pro_calculation")],
             [InlineKeyboardButton("⚡ Новый быстрый расчет", callback_data="quick_calculation")],
             [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
@@ -1856,7 +1860,7 @@ async def quick_handle_take_profit(update: Update, context: ContextTypes.DEFAULT
         )
         
         # Сохраняем расчет для возможной выгрузки
-        context.user_data['last_quick_calculation'] = calculation
+        context.user_data['last_calculation'] = calculation
         
         return ConversationHandler.END
         
@@ -2420,9 +2424,6 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         elif choice == "export_calculation":
             await export_calculation_report(update, context)
             return ConversationHandler.END
-        elif choice == "export_quick_calculation":
-            await export_calculation_report(update, context)
-            return ConversationHandler.END
         
         # Настройки
         elif choice == "change_risk":
@@ -2551,7 +2552,7 @@ def main():
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     
     # Обработчик главного меню (расширенный для новых функций)
-    application.add_handler(CallbackQueryHandler(handle_main_menu, pattern="^(main_menu|portfolio|settings|pro_info|analytics|portfolio_trades|portfolio_balance|portfolio_performance|portfolio_report|portfolio_deposit|portfolio_add_trade|change_risk|change_currency|change_leverage|saved_strategies|set_risk_|set_currency_|set_leverage_|export_calculation|export_quick_calculation|export_portfolio)$"))
+    application.add_handler(CallbackQueryHandler(handle_main_menu, pattern="^(main_menu|portfolio|settings|pro_info|analytics|portfolio_trades|portfolio_balance|portfolio_performance|portfolio_report|portfolio_deposit|portfolio_add_trade|change_risk|change_currency|change_leverage|saved_strategies|set_risk_|set_currency_|set_leverage_|export_calculation|export_portfolio)$"))
     
     # Запускаем бота
     port = int(os.environ.get('PORT', 10000))
