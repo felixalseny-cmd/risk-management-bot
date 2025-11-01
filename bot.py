@@ -2695,7 +2695,7 @@ def main():
             STOP_LOSS: [MessageHandler(filters.TEXT & ~filters.COMMAND, pro_handle_stop_loss)],
             TAKE_PROFIT_SINGLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, pro_handle_take_profit)],
         },
-        fallbacks=[CommandHandler('cancel', cancel), CallbackQueryHandler(start, pattern='^main_menu$')]
+        fallbacks=[CommandHandler('cancel', cancel), CommandHandler('start', start), CallbackQueryHandler(start, pattern='^main_menu$')]
     )
 
     # Обработчики для быстрого расчета с тейк-профитом
@@ -2710,7 +2710,7 @@ def main():
             QUICK_STOPLOSS: [MessageHandler(filters.TEXT & ~filters.COMMAND, quick_handle_stoploss)],
             TAKE_PROFIT_SINGLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, quick_handle_take_profit)],
         },
-        fallbacks=[CommandHandler('cancel', cancel), CallbackQueryHandler(start, pattern='^main_menu$')]
+        fallbacks=[CommandHandler('cancel', cancel), CommandHandler('start', start), CallbackQueryHandler(start, pattern='^main_menu$')]
     )
 
     # Обработчики для добавления сделки
@@ -2724,10 +2724,13 @@ def main():
             ADD_TRADE_VOLUME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_trade_volume)],
             ADD_TRADE_PROFIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_trade_profit)],
         },
-        fallbacks=[CommandHandler('cancel', cancel), CallbackQueryHandler(start, pattern='^main_menu$')]
+        fallbacks=[CommandHandler('cancel', cancel), CommandHandler('start', start), CallbackQueryHandler(start, pattern='^main_menu$')]
     )
 
-    # Регистрируем обработчики
+    # Регистрируем обработчики в правильном порядке
+    application.add_handler(CommandHandler('start', start))
+    
+    # ConversationHandler для основных функций
     application.add_handler(pro_calc_conv)
     application.add_handler(quick_calc_conv)
     application.add_handler(add_trade_conv)
@@ -2742,19 +2745,17 @@ def main():
             ANALYTICS_MENU: [CallbackQueryHandler(handle_main_menu)],
             DEPOSIT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_deposit_amount)],
         },
-        fallbacks=[CommandHandler('cancel', cancel)]
+        fallbacks=[CommandHandler('cancel', cancel), CommandHandler('start', start)]
     )
 
     application.add_handler(conv_handler)
+    
+    # Отдельные команды
     application.add_handler(CommandHandler('info', pro_info_command))
     application.add_handler(CommandHandler('help', pro_info_command))
-    application.add_handler(CommandHandler('portfolio', portfolio_command))
-    application.add_handler(CommandHandler('quick', start_quick_calculation))
-    application.add_handler(CommandHandler('settings', settings_command))
-    application.add_handler(CommandHandler('analytics', analytics_command))
     application.add_handler(CommandHandler('cancel', cancel))
 
-    # Обработчик для неизвестных команд
+    # Обработчик для неизвестных команд (должен быть последним)
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     
     # Обработчик главного меню (расширенный для новых функций)
