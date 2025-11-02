@@ -199,6 +199,11 @@ class PortfolioManager:
         trade_data['timestamp'] = datetime.now().isoformat()
         
         user_data[user_id]['portfolio']['trades'].append(trade_data)
+        
+        # Обновляем баланс на основе прибыли/убытка
+        profit = trade_data.get('profit', 0)
+        user_data[user_id]['portfolio']['current_balance'] += profit
+        
         PortfolioManager.update_performance_metrics(user_id)
         
         instrument = trade_data.get('instrument', 'Unknown')
@@ -210,7 +215,7 @@ class PortfolioManager:
             'type': 'trade',
             'action': 'open' if trade_data.get('status') == 'open' else 'close',
             'instrument': instrument,
-            'profit': trade_data.get('profit', 0),
+            'profit': profit,
             'timestamp': trade_data['timestamp']
         })
         DataManager.save_data()
@@ -230,6 +235,7 @@ class PortfolioManager:
             
         winning_trades = [t for t in closed_trades if t.get('profit', 0) > 0]
         losing_trades = [t for t in closed_trades if t.get('profit', 0) < 0]
+        breakeven_trades = [t for t in closed_trades if t.get('profit', 0) == 0]
         
         portfolio['performance']['total_trades'] = len(closed_trades)
         portfolio['performance']['winning_trades'] = len(winning_trades)
@@ -256,19 +262,34 @@ class PortfolioManager:
             else:
                 portfolio['performance']['profit_factor'] = float('inf') if portfolio['performance']['total_profit'] > 0 else 0
             
+            # Расчет просадки на основе истории баланса
+            balance_history = []
             running_balance = portfolio['initial_balance']
-            peak = running_balance
-            max_drawdown = 0
             
-            for trade in sorted(closed_trades, key=lambda x: x['timestamp']):
-                running_balance += trade.get('profit', 0)
-                if running_balance > peak:
-                    peak = running_balance
-                drawdown = (peak - running_balance) / peak * 100
-                if drawdown > max_drawdown:
-                    max_drawdown = drawdown
+            for event in sorted(portfolio['history'], key=lambda x: x['timestamp']):
+                if event['type'] == 'balance':
+                    if event['action'] == 'deposit':
+                        running_balance += event['amount']
+                    elif event['action'] == 'withdrawal':
+                        running_balance -= event['amount']
+                elif event['type'] == 'trade' and event['action'] == 'close':
+                    running_balance += event['profit']
+                
+                balance_history.append(running_balance)
             
-            portfolio['performance']['max_drawdown'] = max_drawdown
+            # Расчет максимальной просадки
+            if balance_history:
+                peak = balance_history[0]
+                max_drawdown = 0
+                
+                for balance in balance_history:
+                    if balance > peak:
+                        peak = balance
+                    drawdown = (peak - balance) / peak * 100
+                    if drawdown > max_drawdown:
+                        max_drawdown = drawdown
+                
+                portfolio['performance']['max_drawdown'] = max_drawdown
         DataManager.save_data()
     
     @staticmethod
@@ -301,35 +322,42 @@ class PortfolioManager:
         
         recommendations = []
         
+        # Простые и понятные рекомендации для трейдеров
+        if perf['total_trades'] == 0:
+            recommendations.append("📊 Начните добавлять сделки для анализа вашей торговли")
+            return recommendations
+        
         if perf['win_rate'] < 40:
-            recommendations.append("🎯 Увеличьте соотношение риск/прибыль до 1:3 для компенсации низкого Win Rate")
+            recommendations.append("🎯 Увеличьте соотношение риск/прибыль до 1:3 - это компенсирует низкий процент прибыльных сделок")
         elif perf['win_rate'] > 60:
-            recommendations.append("✅ Отличный Win Rate! Рассмотрите увеличение размера позиций")
+            recommendations.append("✅ Отличный результат! Вы можете увеличить размер позиций при сохранении риска")
         else:
-            recommendations.append("📊 Win Rate в норме. Сфокусируйтесь на управлении рисками")
+            recommendations.append("📊 Стабильные результаты. Сфокусируйтесь на качестве сделок, а не количестве")
         
         if perf['profit_factor'] < 1:
-            recommendations.append("⚠️ Profit Factor ниже 1.0 - пересмотрите стратегию")
+            recommendations.append("⚠️ Сумма убытков превышает прибыль. Пересмотрите стратегию и управление рисками")
         elif perf['profit_factor'] > 2:
-            recommendations.append("💰 Отличный Profit Factor! Стратегия очень эффективна")
-        
-        if perf['max_drawdown'] > 20:
-            recommendations.append(f"📉 Максимальная просадка {perf['max_drawdown']:.1f}% слишком высока. Уменьшите риск на сделку")
-        elif perf['max_drawdown'] < 5:
-            recommendations.append("📈 Низкая просадка - можно рассмотреть увеличение агрессивности")
+            recommendations.append("💰 Отличная эффективность! Ваша стратегия работает стабильно")
         
         if perf['average_profit'] > 0 and perf['average_loss'] > 0:
             reward_ratio = perf['average_profit'] / perf['average_loss']
             if reward_ratio < 1:
-                recommendations.append("🔻 Соотношение прибыль/убыток меньше 1. Улучшайте тейк-профиты")
+                recommendations.append("🔻 Средняя прибыль меньше среднего убытка. Улучшайте тейк-профиты и стоп-лоссы")
             elif reward_ratio > 2:
-                recommendations.append("🔺 Отличное соотношение прибыль/убыток! Продолжайте в том же духе")
+                recommendations.append("🔺 Отличное соотношение прибыли к убытку! Продолжайте в том же духе")
         
         allocation = portfolio.get('allocation', {})
-        if len(allocation) < 3:
-            recommendations.append("🌐 Диверсифицируйте портфель - торгуйте больше инструментов")
-        elif len(allocation) > 10:
-            recommendations.append("🎯 Слишком много инструментов - сфокусируйтесь на лучших")
+        if len(allocation) < 2:
+            recommendations.append("🌐 Диверсифицируйте портфель - добавьте еще 1-2 инструмента для снижения риска")
+        elif len(allocation) > 8:
+            recommendations.append("🎯 Слишком много инструментов - сфокусируйтесь на 3-5 лучших для повышения эффективности")
+        
+        # Рекомендации по управлению капиталом
+        if perf['total_trades'] > 20:
+            if perf['win_rate'] > 55 and perf['profit_factor'] > 1.5:
+                recommendations.append("🚀 Вы торгуете эффективно! Рассмотрите постепенное увеличение размера позиций")
+            elif perf['win_rate'] < 45 and perf['profit_factor'] < 1:
+                recommendations.append("🔄 Сделайте паузу в торговле и проанализируйте свою стратегию")
         
         return recommendations
 
@@ -596,6 +624,8 @@ class ReportGenerator:
             portfolio = user_data[user_id]['portfolio']
             performance = portfolio['performance']
             
+            total_return = ((portfolio['current_balance'] - portfolio['initial_balance']) / portfolio['initial_balance'] * 100) if portfolio['initial_balance'] > 0 else 0
+            
             report = f"""
 ОТЧЕТ ПО ПОРТФЕЛЮ
 Дата генерации: {datetime.now().strftime('%d.%m.%Y %H:%M')}
@@ -604,7 +634,7 @@ class ReportGenerator:
 • Начальный депозит: ${portfolio['initial_balance']:,.2f}
 • Текущий баланс: ${portfolio['current_balance']:,.2f}
 • Общая прибыль/убыток: ${portfolio['current_balance'] - portfolio['initial_balance']:,.2f}
-• Доходность: {((portfolio['current_balance'] - portfolio['initial_balance']) / portfolio['initial_balance'] * 100) if portfolio['initial_balance'] > 0 else 0:.2f}%
+• Доходность: {total_return:.2f}%
 
 СТАТИСТИКА ТОРГОВЛИ:
 • Всего сделок: {performance['total_trades']}
@@ -716,7 +746,6 @@ async def portfolio_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Используйте кнопку '➕ Добавить сделку' чтобы начать.",
                 parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("➕ Добавить сделку", callback_data="portfolio_add_trade")],
                     [InlineKeyboardButton("🔙 Назад", callback_data="portfolio")]
                 ])
             )
@@ -726,11 +755,12 @@ async def portfolio_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
         trades_text = "📈 *Последние сделки:*\n\n"
         
         for trade in reversed(recent_trades):
-            status_emoji = "🟢" if trade.get('profit', 0) > 0 else "🔴" if trade.get('profit', 0) < 0 else "⚪"
+            profit = trade.get('profit', 0)
+            status_emoji = "🟢" if profit > 0 else "🔴" if profit < 0 else "⚪"
             trades_text += (
                 f"{status_emoji} *{trade.get('instrument', 'N/A')}* | "
                 f"{trade.get('direction', 'N/A')} | "
-                f"Прибыль: ${trade.get('profit', 0):.2f}\n"
+                f"Прибыль: ${profit:.2f}\n"
                 f"📅 {trade.get('timestamp', '')[:16]}\n\n"
             )
         
@@ -740,7 +770,6 @@ async def portfolio_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
             trades_text,
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ Добавить сделку", callback_data="portfolio_add_trade")],
                 [InlineKeyboardButton("🔙 Назад", callback_data="portfolio")]
             ])
         )
@@ -765,7 +794,7 @@ async def portfolio_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_balance = portfolio.get('current_balance', 0)
         total_profit = performance.get('total_profit', 0)
         total_loss = performance.get('total_loss', 0)
-        net_profit = total_profit + total_loss
+        net_profit = total_profit - total_loss
         
         balance_text += f"💳 Начальный депозит: ${initial_balance:,.2f}\n"
         balance_text += f"💵 Текущий баланс: ${current_balance:,.2f}\n"
@@ -816,7 +845,11 @@ async def portfolio_performance(update: Update, context: ContextTypes.DEFAULT_TY
         perf_text += f"💰 Средняя прибыль: ${avg_profit:.2f}\n"
         perf_text += f"📉 Средний убыток: ${avg_loss:.2f}\n"
         perf_text += f"⚖️ Profit Factor: {profit_factor:.2f}\n"
-        perf_text += f"📊 Макс. просадка: {max_drawdown:.1f}%\n\n"
+        
+        if max_drawdown > 0:
+            perf_text += f"📊 Макс. просадка: {max_drawdown:.1f}%\n\n"
+        else:
+            perf_text += "📊 Макс. просадка: Нет данных\n\n"
         
         recommendations = PortfolioManager.get_performance_recommendations(user_id)
         
@@ -1442,7 +1475,7 @@ async def pro_handle_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data['entry_price'] = entry_price
         
         direction = context.user_data.get('direction', 'BUY')
-        direction_text = "выше" if direction == "BUY" else "ниже"
+        direction_text = "ниже" if direction == "BUY" else "выше"
         
         await update.message.reply_text(
             f"💎 *Цена входа:* {entry_price}\n\n"
@@ -2041,6 +2074,9 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         portfolio = user_data[user_id]['portfolio']
         performance = portfolio['performance']
         
+        # Расчет общей доходности
+        total_return = ((portfolio['current_balance'] - portfolio['initial_balance']) / portfolio['initial_balance'] * 100) if portfolio['initial_balance'] > 0 else 0
+        
         analytics_text = f"""
 🔮 *PRO АНАЛИТИКА И СТАТИСТИКА v3.0*
 
@@ -2052,10 +2088,10 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 • 📉 Макс. просадка: {performance['max_drawdown']:.1f}%
 
 📈 *ПРОФЕССИОНАЛЬНЫЕ МЕТРИКИ:*
-• 📊 Коэффициент Шарпа: {performance.get('sharpe_ratio', 'N/A')}
-• 🔄 Общая доходность: {((portfolio['current_balance'] - portfolio['initial_balance']) / portfolio['initial_balance'] * 100) if portfolio['initial_balance'] > 0 else 0:.2f}%
+• 🔄 Общая доходность: {total_return:.2f}%
 • 📋 Средняя прибыль: ${performance['average_profit']:.2f}
 • 📉 Средний убыток: ${performance['average_loss']:.2f}
+• 📊 Соотношение прибыль/убыток: {performance['average_profit'] / performance['average_loss']:.2f if performance['average_loss'] > 0 else 'N/A'}
 
 🎯 *РЕКОМЕНДАЦИИ ДЛЯ PRO ТРЕЙДЕРА:*
 """
@@ -2075,9 +2111,6 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 • 📈 Интеграция с TradingView
 • 💹 Автоматический импорт сделок
 • 🤖 AI-ассистент для стратегий
-• 🌐 Мульти-таймфрейм анализ
-• 📱 Мобильные уведомления
-• 🔄 Синхронизация с биржами
 
 💡 *Используйте PRO инструменты для максимальной эффективности!*
 """
