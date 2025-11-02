@@ -20,7 +20,7 @@ from telegram.ext import (
     CallbackQueryHandler
 )
 
-# Настройка логирования
+# Оптимизированное логирование для Render
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -127,19 +127,12 @@ class DataManager:
         except Exception as e:
             logger.error(f"Ошибка сохранения данных: {e}")
 
-    @staticmethod
-    def auto_save():
-        """Автосохранение каждые 5 минут"""
-        DataManager.save_data()
-        # Планируем следующее автосохранение
-        asyncio.get_event_loop().call_later(300, DataManager.auto_save)
-
 # Глобальное хранилище данных пользователей
 user_data: Dict[int, Dict[str, Any]] = DataManager.load_data()
 
-# Быстрый кэш
+# Упрощенный кэш
 class FastCache:
-    def __init__(self, max_size=500, ttl=300):
+    def __init__(self, max_size=100, ttl=300):
         self.cache = {}
         self.max_size = max_size
         self.ttl = ttl
@@ -155,7 +148,9 @@ class FastCache:
     
     def set(self, key, value):
         if len(self.cache) >= self.max_size:
-            self.cache.clear()
+            # Удаляем самые старые записи
+            oldest_key = min(self.cache.keys(), key=lambda k: self.cache[k][1])
+            del self.cache[oldest_key]
         self.cache[key] = (value, time.time())
 
 fast_cache = FastCache()
@@ -333,25 +328,6 @@ class PortfolioManager:
             recommendations.append("🌐 Диверсифицируйте портфель - торгуйте больше инструментов")
         elif len(allocation) > 10:
             recommendations.append("🎯 Слишком много инструментов - сфокусируйтесь на лучших")
-        
-        # Профессиональные рекомендации
-        if perf['total_trades'] > 0:
-            if perf['win_rate'] > 50 and perf['profit_factor'] < 1:
-                recommendations.append("💡 Парадокс: высокий Win Rate но низкий Profit Factor - уменьшайте убытки")
-            elif perf['win_rate'] < 40 and perf['profit_factor'] > 1.5:
-                recommendations.append("💡 Стратегия с низким Win Rate но высоким Profit Factor - продолжайте!")
-            
-            if perf['max_drawdown'] > 15:
-                recommendations.append("🚨 Критическая просадка! Срочно пересмотрите управление рисками")
-            
-            # Анализ стабильности
-            recent_trades = portfolio['trades'][-10:] if len(portfolio['trades']) >= 10 else portfolio['trades']
-            if recent_trades:
-                recent_profits = [t.get('profit', 0) for t in recent_trades if t.get('status') == 'closed']
-                if len(recent_profits) >= 5:
-                    avg_recent = sum(recent_profits) / len(recent_profits)
-                    if avg_recent < 0:
-                        recommendations.append("📉 Недавние сделки убыточны - сделайте паузу и проанализируйте")
         
         return recommendations
 
@@ -2328,10 +2304,10 @@ async def show_saved_strategies(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.error(f"Ошибка в show_saved_strategies: {e}")
 
-# НОВАЯ ФУНКЦИЯ - АНАЛИТИКА
+# УПРОЩЕННАЯ ФУНКЦИЯ - АНАЛИТИКА (заглушка)
 @log_performance
 async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Раздел аналитики и будущих возможностей"""
+    """Раздел аналитики - упрощенная версия"""
     try:
         if update.message:
             user_id = update.message.from_user.id
@@ -2340,51 +2316,20 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await update.callback_query.answer()
         
         analytics_text = """
-🔮 *АНАЛИТИКА И БУДУЩИЕ ВОЗМОЖНОСТИ*
+🔮 *АНАЛИТИКА И СТАТИСТИКА*
 
-🚀 *В РАЗРАБОТКЕ:*
+📊 *ДОСТУПНЫЕ ВОЗМОЖНОСТИ:*
+• 📈 Профессиональный расчет позиций
+• 💼 Управление торговым портфелем  
+• 📊 Анализ эффективности стратегий
+• 💾 Выгрузка детальных отчетов
 
-🤖 *AI-АССИСТЕНТ*
-• Прогнозирование движения цены на основе ML
-• Интеллектуальные рекомендации по точкам входа/выхода
-• Автоматическая оптимизация торговых стратегий
+🚀 *СКОРО БУДЕТ ДОСТУПНО:*
+• AI-ассистент для прогнозирования
+• Реальные котировки с бирж
+• Расширенная аналитика портфеля
 
-📈 *РЕАЛЬНЫЕ КОТИРОВКИ С БИРЖИ*
-• Интеграция с Binance, Bybit, FTX API
-• Автоматическое обновление котировок в реальном времени
-• Price alerts и уведомления о достижении уровней
-
-📊 *РАСШИРЕННАЯ АНАЛИТИКА ПОРТФЕЛЯ*
-• Корреляция между активами
-• Анализ волатильности и риска
-• Оптимизация распределения капитала
-
-🔄 *АВТОМАТИЧЕСКАЯ ТОРГОВЛЯ*
-• Интеграция с торговыми API
-• Исполнение сделок по сигналам
-• Мониторинг и управление позициями в реальном времени
-
-📱 *МОБИЛЬНОЕ ПРИЛОЖЕНИЕ*
-• Push-уведомления на телефон
-• Управление портфелем на ходу
-• Полная функциональность в кармане
-
-🔐 *ПОВЫШЕННАЯ БЕЗОПАСНОСТЬ*
-• Двухфакторная аутентификация
-• Шифрование данных
-• Резервное копирование в облако
-
-🌍 *МУЛЬТИВАЛЮТНАЯ ПОДДЕРЖКА*
-• Поддержка всех основных валют
-• Автоматическая конвертация
-• Локализация для разных регионов
-
-📚 *ОБУЧАЮЩИЕ МАТЕРИАЛЫ*
-• Видео-уроки
-• Торговые стратегии
-• Анализ рынка и обзоры
-
-*Следите за обновлениями! Новые функции появляются регулярно.*
+💡 *Следите за обновлениями!*
 """
         
         keyboard = [
@@ -2429,13 +2374,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         welcome_text = f"""
 👋 *Привет, {user_name}!*
 
-🎯 *PRO Калькулятор Управления Рисками v3.0*
+🎯 PRO Калькулятор Управления Рисками v3.0
 
-⚡ *АКТИВИРОВАННЫЕ ВОЗМОЖНОСТИ:*
-• ✅ Профессиональный расчет (полный цикл с тейк-профитом)
-• ✅ Быстрый расчет (мгновенный с тейк-профитом)  
+⚡ *МОИ ВОЗМОЖНОСТИ:*
+• ✅ Профессиональный расчет
+• ✅ Быстрый расчет 
 • ✅ Управление портфелем и сделками
-• ✅ Выгрузка отчетов в TXT
+• ✅ Выгрузка отчетов 
 • ✅ Сохранение стратегий
 • ✅ Расширенная аналитика
 • ✅ Автосохранение данных
@@ -2670,12 +2615,6 @@ def main():
 
     logger.info("🚀 Запуск ПРОФЕССИОНАЛЬНОГО калькулятора рисков v3.0...")
     
-    # Запускаем автосохранение
-    try:
-        DataManager.auto_save()
-    except:
-        pass
-    
     application = Application.builder().token(token).build()
 
     # Обработчики для профессионального расчета с тейк-профитом
@@ -2695,7 +2634,7 @@ def main():
             STOP_LOSS: [MessageHandler(filters.TEXT & ~filters.COMMAND, pro_handle_stop_loss)],
             TAKE_PROFIT_SINGLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, pro_handle_take_profit)],
         },
-        fallbacks=[CommandHandler('cancel', cancel), CommandHandler('start', start), CallbackQueryHandler(start, pattern='^main_menu$')]
+        fallbacks=[CommandHandler('cancel', cancel), CallbackQueryHandler(start, pattern='^main_menu$')]
     )
 
     # Обработчики для быстрого расчета с тейк-профитом
@@ -2710,7 +2649,7 @@ def main():
             QUICK_STOPLOSS: [MessageHandler(filters.TEXT & ~filters.COMMAND, quick_handle_stoploss)],
             TAKE_PROFIT_SINGLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, quick_handle_take_profit)],
         },
-        fallbacks=[CommandHandler('cancel', cancel), CommandHandler('start', start), CallbackQueryHandler(start, pattern='^main_menu$')]
+        fallbacks=[CommandHandler('cancel', cancel), CallbackQueryHandler(start, pattern='^main_menu$')]
     )
 
     # Обработчики для добавления сделки
@@ -2724,13 +2663,10 @@ def main():
             ADD_TRADE_VOLUME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_trade_volume)],
             ADD_TRADE_PROFIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_trade_profit)],
         },
-        fallbacks=[CommandHandler('cancel', cancel), CommandHandler('start', start), CallbackQueryHandler(start, pattern='^main_menu$')]
+        fallbacks=[CommandHandler('cancel', cancel), CallbackQueryHandler(start, pattern='^main_menu$')]
     )
 
-    # Регистрируем обработчики в правильном порядке
-    application.add_handler(CommandHandler('start', start))
-    
-    # ConversationHandler для основных функций
+    # Регистрируем обработчики
     application.add_handler(pro_calc_conv)
     application.add_handler(quick_calc_conv)
     application.add_handler(add_trade_conv)
@@ -2745,17 +2681,19 @@ def main():
             ANALYTICS_MENU: [CallbackQueryHandler(handle_main_menu)],
             DEPOSIT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_deposit_amount)],
         },
-        fallbacks=[CommandHandler('cancel', cancel), CommandHandler('start', start)]
+        fallbacks=[CommandHandler('cancel', cancel)]
     )
 
     application.add_handler(conv_handler)
-    
-    # Отдельные команды
     application.add_handler(CommandHandler('info', pro_info_command))
     application.add_handler(CommandHandler('help', pro_info_command))
+    application.add_handler(CommandHandler('portfolio', portfolio_command))
+    application.add_handler(CommandHandler('quick', start_quick_calculation))
+    application.add_handler(CommandHandler('settings', settings_command))
+    application.add_handler(CommandHandler('analytics', analytics_command))
     application.add_handler(CommandHandler('cancel', cancel))
 
-    # Обработчик для неизвестных команд (должен быть последним)
+    # Обработчик для неизвестных команд
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     
     # Обработчик главного меню (расширенный для новых функций)
