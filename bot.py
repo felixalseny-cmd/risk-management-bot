@@ -454,9 +454,20 @@ class FastRiskCalculator:
                 
             required_margin = (position_size * contract_size * entry_price) / lev_value if lev_value > 0 else 0
             
-            # Расчет потенциальной прибыли
-            potential_profit = take_profit_pips * pip_value_per_lot * position_size
-            reward_risk_ratio = potential_profit / risk_amount if risk_amount > 0 else 0
+            # Расчет потенциальной прибыли/убытка
+            if direction == 'BUY':
+                potential_profit = (take_profit - entry_price) * pip_value_per_lot * position_size
+                potential_loss = (stop_loss - entry_price) * pip_value_per_lot * position_size
+            else:  # SELL
+                potential_profit = (entry_price - take_profit) * pip_value_per_lot * position_size
+                potential_loss = (entry_price - stop_loss) * pip_value_per_lot * position_size
+            
+            # Если потенциальная прибыль отрицательная - это убыток
+            if potential_profit < 0:
+                potential_profit = 0
+                reward_risk_ratio = 0
+            else:
+                reward_risk_ratio = potential_profit / risk_amount if risk_amount > 0 else 0
             
             result = {
                 'position_size': position_size,
@@ -464,10 +475,12 @@ class FastRiskCalculator:
                 'stop_pips': stop_pips,
                 'take_profit_pips': take_profit_pips,
                 'potential_profit': potential_profit,
+                'potential_loss': abs(potential_loss),
                 'reward_risk_ratio': reward_risk_ratio,
                 'required_margin': required_margin,
                 'risk_percent': (risk_amount / deposit) * 100 if deposit > 0 else 0,
-                'free_margin': deposit - required_margin
+                'free_margin': deposit - required_margin,
+                'is_profitable': potential_profit > 0
             }
             
             fast_cache.set(cache_key, result)
@@ -481,10 +494,12 @@ class FastRiskCalculator:
                 'stop_pips': 0,
                 'take_profit_pips': 0,
                 'potential_profit': 0,
+                'potential_loss': 0,
                 'reward_risk_ratio': 0,
                 'required_margin': 0,
                 'risk_percent': 0,
-                'free_margin': deposit
+                'free_margin': deposit,
+                'is_profitable': False
             }
 
 # Валидатор ввода данных
@@ -530,13 +545,16 @@ class ReportGenerator:
     def generate_calculation_report(calculation_data: Dict, user_data_context: Dict) -> str:
         """Генерация отчета о расчете"""
         try:
+            instrument = user_data_context.get('instrument', 'N/A')
+            direction = user_data_context.get('direction', 'N/A')
+            
             report = f"""
 ОТЧЕТ О РАСЧЕТЕ ПОЗИЦИИ
 Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}
 
 ПАРАМЕТРЫ СДЕЛКИ:
-• Инструмент: {user_data_context.get('instrument', 'N/A')}
-• Направление: {user_data_context.get('direction', 'N/A')}
+• Инструмент: {instrument}
+• Направление: {direction}
 • Депозит: ${user_data_context.get('deposit', 0):,.2f}
 • Плечо: {user_data_context.get('leverage', 'N/A')}
 • Уровень риска: {user_data_context.get('risk_percent', 0)*100}%
@@ -552,6 +570,7 @@ class ReportGenerator:
 • Размер позиции: {calculation_data.get('position_size', 0):.2f} лотов
 • Сумма риска: ${calculation_data.get('risk_amount', 0):.2f}
 • Потенциальная прибыль: ${calculation_data.get('potential_profit', 0):.2f}
+• Потенциальный убыток: ${calculation_data.get('potential_loss', 0):.2f}
 • Соотношение прибыль/риск: {calculation_data.get('reward_risk_ratio', 0):.2f}
 • Требуемая маржа: ${calculation_data.get('required_margin', 0):.2f}
 • Свободная маржа: ${calculation_data.get('free_margin', 0):.2f}
@@ -574,9 +593,13 @@ class ReportGenerator:
         position_size = calculation_data.get('position_size', 0)
         free_margin = calculation_data.get('free_margin', 0)
         deposit = user_data_context.get('deposit', 0)
+        is_profitable = calculation_data.get('is_profitable', True)
         
         # Анализ соотношения риск/прибыль
-        if rr_ratio < 1:
+        if not is_profitable:
+            recommendations.append("🔴 УБЫТОЧНАЯ СДЕЛКА: Тейк-профит ниже/выше цены входа")
+            recommendations.append("   💡 Рекомендация: Пересмотрите уровни тейк-профита и стоп-лосса")
+        elif rr_ratio < 1:
             recommendations.append("🔴 КРИТИЧЕСКИЙ УРОВЕНЬ: Соотношение прибыль/риск меньше 1")
             recommendations.append("   💡 Рекомендация: Увеличьте дистанцию тейк-профита или уменьшите стоп-лосс")
         elif rr_ratio < 1.5:
@@ -610,9 +633,9 @@ class ReportGenerator:
             recommendations.append("   💡 Рекомендация: Есть запас для других сделок")
         
         # Общие рекомендации
-        if rr_ratio >= 1.5 and risk_percent <= 3 and margin_usage <= 40:
+        if is_profitable and rr_ratio >= 1.5 and risk_percent <= 3 and margin_usage <= 40:
             recommendations.append("🚀 ИДЕАЛЬНАЯ СДЕЛКА: Все параметры оптимальны!")
-        elif rr_ratio < 1 or risk_percent > 5:
+        elif not is_profitable or rr_ratio < 1 or risk_percent > 5:
             recommendations.append("⚡ ОПАСНО: Пересмотрите параметры сделки!")
         
         return "\n".join(recommendations)
@@ -1569,9 +1592,15 @@ async def pro_calculate_and_show_results(update: Update, context: ContextTypes.D
             risk_percent=risk_percent
         )
         
+        # Определяем статус сделки
+        is_profitable = calculation.get('is_profitable', True)
+        status_emoji = "🟢" if is_profitable else "🔴"
+        status_text = "ПРИБЫЛЬНАЯ" if is_profitable else "УБЫТОЧНАЯ"
+        
         # Формируем результат
         result_text = f"""
 🎯 *РЕЗУЛЬТАТЫ ПРОФЕССИОНАЛЬНОГО РАСЧЕТА*
+{status_emoji} *СТАТУС: {status_text}*
 
 📊 *Параметры сделки:*
 • 💰 Инструмент: {instrument}
@@ -1591,21 +1620,19 @@ async def pro_calculate_and_show_results(update: Update, context: ContextTypes.D
 • 📦 Размер позиции: {calculation['position_size']:.2f} лотов
 • 💸 Сумма риска: ${calculation['risk_amount']:.2f}
 • 💰 Потенциальная прибыль: ${calculation['potential_profit']:.2f}
+• 📉 Потенциальный убыток: ${calculation['potential_loss']:.2f}
 • ⚖️ Соотношение прибыль/риск: {calculation['reward_risk_ratio']:.2f}
 • 🏦 Требуемая маржа: ${calculation['required_margin']:.2f}
 • 💵 Свободная маржа: ${calculation['free_margin']:.2f}
 • 📊 Риск в %: {calculation['risk_percent']:.2f}%
 
-💡 *Рекомендации:*
-• Всегда используйте стоп-лосс
-• Следите за уровнем маржи
-• Диверсифицируйте портфель
+💡 *Профессиональные рекомендации:*
+{ReportGenerator.get_professional_recommendations(calculation, user_data_context)}
 """
         
         keyboard = [
             [InlineKeyboardButton("💾 Выгрузить расчет", callback_data="export_calculation")],
             [InlineKeyboardButton("💼 Сохранить сделку", callback_data="save_trade_from_pro")],
-            [InlineKeyboardButton("💾 Сохранить стратегию", callback_data="save_strategy")],
             [InlineKeyboardButton("📊 Новый расчет", callback_data="pro_calculation")],
             [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
         ]
@@ -1635,7 +1662,9 @@ async def pro_calculate_and_show_results(update: Update, context: ContextTypes.D
             'stop_loss': stop_loss,
             'take_profit': take_profit,
             'position_size': calculation['position_size'],
-            'potential_profit': calculation['potential_profit']
+            'potential_profit': calculation['potential_profit'],
+            'potential_loss': calculation['potential_loss'],
+            'is_profitable': is_profitable
         }
         
         return ConversationHandler.END
@@ -1672,19 +1701,29 @@ async def save_trade_from_pro_calculation(update: Update, context: ContextTypes.
             )
             return
         
+        # Определяем прибыль/убыток
+        if calculation_data['is_profitable']:
+            profit = calculation_data['potential_profit']
+        else:
+            profit = -calculation_data['potential_loss']
+        
         # Создаем данные сделки
         trade_data = {
             'instrument': calculation_data['instrument'],
             'direction': calculation_data['direction'],
             'entry_price': calculation_data['entry_price'],
-            'exit_price': calculation_data['take_profit'],  # Используем тейк-профит как цену выхода
+            'exit_price': calculation_data['take_profit'],
+            'stop_loss': calculation_data['stop_loss'],
             'volume': calculation_data['position_size'],
-            'profit': calculation_data['potential_profit'],
-            'status': 'closed'
+            'profit': profit,
+            'status': 'closed',
+            'calculated': True
         }
         
         # Добавляем сделку в портфель
         trade_id = PortfolioManager.add_trade(user_id, trade_data)
+        
+        profit_text = "прибылью" if profit > 0 else "убытком"
         
         await query.edit_message_text(
             f"✅ *Сделка #{trade_id} успешно сохранена в портфель!*\n\n"
@@ -1693,9 +1732,10 @@ async def save_trade_from_pro_calculation(update: Update, context: ContextTypes.
             f"• 📈 Направление: {trade_data['direction']}\n"
             f"• 💎 Вход: {trade_data['entry_price']}\n"
             f"• 🎯 Выход: {trade_data['exit_price']}\n"
+            f"• 🛑 Стоп-лосс: {trade_data['stop_loss']}\n"
             f"• 📦 Объем: {trade_data['volume']:.2f} лотов\n"
-            f"• 💵 Прибыль: ${trade_data['profit']:.2f}\n\n"
-            f"Сделка добавлена в ваш торговый портфель.",
+            f"• 💵 Результат: ${profit:.2f}\n\n"
+            f"Сделка добавлена в ваш торговый портфель с {profit_text}.",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("💼 Портфель", callback_data="portfolio")],
@@ -2093,7 +2133,7 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 • 📉 Средний убыток: ${performance['average_loss']:.2f}
 • 📊 Соотношение прибыль/убыток: {performance['average_profit'] / performance['average_loss']:.2f if performance['average_loss'] > 0 else 'N/A'}
 
-🎯 *РЕКОМЕНДАЦИИ ДЛЯ PRO ТРЕЙДЕРА:*
+🎯 *КЛЮЧЕВЫЕ ПОКАЗАТЕЛИ ДЛЯ PRO ТРЕЙДЕРА:*
 """
         
         recommendations = PortfolioManager.get_performance_recommendations(user_id)
@@ -2103,16 +2143,24 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         else:
             analytics_text += "💡 Начните торговать для получения рекомендаций\n"
         
-        analytics_text += """
+        # Добавляем профессиональные инсайты
+        analytics_text += f"""
+        
+📈 *АНАЛИЗ РИСК-МЕНЕДЖМЕНТА:*
+• 🎯 Оптимальный риск на сделку: 1-2% от депозита
+• 💰 Рекомендуемое соотношение прибыль/риск: 1:2 или выше
+• 📊 Целевой Profit Factor: > 1.5 для стабильной прибыли
+• 🔄 Рекомендуемый Win Rate: > 40% с хорошим соотношением риск/прибыль
 
-🚀 *СКОРО В PRO ВЕРСИИ:*
-• 📊 AI-анализ паттернов и сигналов
-• 🔍 Сканер рыночных возможностей
-• 📈 Интеграция с TradingView
-• 💹 Автоматический импорт сделок
-• 🤖 AI-ассистент для стратегий
+💡 *PRO СТРАТЕГИЧЕСКИЕ РЕКОМЕНДАЦИИ:*
+• Всегда учитывайте потенциальные убытки при расчетах
+• Используйте стоп-лосс для каждой сделки
+• Анализируйте статистику для оптимизации стратегии
+• Диверсифицируйте портфель по инструментам
 
-💡 *Используйте PRO инструменты для максимальной эффективности!*
+🚀 *ДЛЯ ДАЛЬНЕЙШЕГО РОСТА:*
+Используйте профессиональный расчет для точного управления рисками
+и анализа потенциальной прибыли/убытка по каждой сделке.
 """
         
         keyboard = [
@@ -2160,7 +2208,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 🎯 PRO Калькулятор Управления Рисками v3.0
 
 ⚡ *МОИ ВОЗМОЖНОСТИ:*
-• ✅ Профессиональный расчет
+• ✅ Профессиональный расчет с учетом прибыли и убытков
 • ✅ Управление портфелем и сделками
 • ✅ Выгрузка отчетов 
 • ✅ Сохранение стратегий
@@ -2215,9 +2263,9 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🎯 *ДЛЯ ПРОФЕССИОНАЛЬНЫХ ТРЕЙДЕРОВ:*
 
 💡 *ИНТУИТИВНОЕ УПРАВЛЕНИЕ РИСКАМИ:*
-• Рассчитывайте оптимальный размер позиции за секунды
+• Рассчитывайте оптимальный размер позиции с учетом прибыли и убытков
 • Автоматический учет типа инструмента (Форекс, крипто, индексы)
-• Умное распределение объема по нескольким тейк-профитам
+• Учет потенциальных убытков при неправильном размещении тейк-профита
 • Мгновенный пересчет при изменении параметров
 
 📊 *ПРОФЕССИОНАЛЬНАЯ АНАЛИТИКА:*
@@ -2232,12 +2280,6 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Расчет ключевых метрик: Win Rate, Profit Factor, просадки
 • Интеллектуальные рекомендации по улучшению
 
-⚡ *БЫСТРЫЕ РАСЧЕТЫ:*
-• Мгновенные вычисления с кэшированием
-• Валидация вводимых данных
-• Автоматическое сохранение прогресса
-• История всех расчетов и сделок
-
 🔧 *КАК ИСПОЛЬЗОВАТЬ:*
 1. *Профессиональный расчет* - полный цикл с настройкой всех параметров
 2. *Портфель* - управление сделками и аналитика эффективности
@@ -2248,11 +2290,12 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Доступ к истории после перезапуска бота
 • Экспорт отчетов для дальнейшего анализа
 
-🚀 *СОВЕТЫ ПРОФЕССИОНАЛА:*
-• Всегда используйте стоп-лосс для ограничения рисков
-• Диверсифицируйте портфель по разным инструментам
-• Следите за соотношением риск/прибыль не менее 1:2
-• Регулярно анализируйте статистику для оптимизации стратегии
+🚀 *ВАЖНО ДЛЯ PRO ТРЕЙДЕРОВ:*
+• Бот учитывает как прибыльные, так и убыточные сделки
+• При расчете размера позиции анализируется потенциальный убыток
+• Если тейк-профит установлен неправильно (ниже цены входа для BUY или выше для SELL), 
+  бот предупредит об убыточной сделке
+• Всегда проверяйте соотношение риск/прибыль перед открытием позиции
 
 👨‍💻 *Разработчик для профессионалов:* @fxfeelgood
 
