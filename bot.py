@@ -7,6 +7,8 @@ import functools
 import json
 import io
 import math
+import aiohttp
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -19,6 +21,13 @@ from telegram.ext import (
     ConversationHandler,
     CallbackQueryHandler
 )
+
+# === НАСТРОЙКИ ДЛЯ RENDER ===
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN не найден! Добавь в переменные окружения.")
+
+KEEP_ALIVE_URL = "https://risk-management-bot-pro.onrender.com"
 
 # Оптимизированное логирование для Render
 logging.basicConfig(
@@ -43,6 +52,24 @@ def log_performance(func):
             logger.error(f"Ошибка в {func.__name__}: {e} (время: {execution_time:.2f}с)")
             raise
     return wrapper
+
+# === Keep-Alive для Render ===
+async def keep_alive():
+    """Keep-alive для предотвращения сна на Render"""
+    if not KEEP_ALIVE_URL:
+        return
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get(KEEP_ALIVE_URL) as resp:
+                    logger.info(f"Keep-alive пинг: {resp.status}")
+            except Exception as e:
+                logger.error(f"Ошибка keep-alive: {e}")
+            await asyncio.sleep(300)  # Каждые 5 минут
+
+def run_keep_alive():
+    """Запуск keep-alive в отдельном потоке"""
+    asyncio.run(keep_alive())
 
 # Состояния диалога
 (
@@ -255,7 +282,7 @@ class PortfolioAnalyzer:
             strategies.append("⚡ СТРАТЕГИЯ 3: Волатильностное управление")
             strategies.append("   • Уменьшайте размер позиций для волатильных активов")
             strategies.append("   • Используйте ATR для расчета стоп-лоссов")
-            strategies.append("   • Адаптируйте риск под текучную волатильность")
+            strategies.append("   • Адаптируйте риск под текущую волатильность")
         else:
             strategies.append("💡 Для сложных стратегий добавьте больше позиций (рекомендуется 3-5)")
         
@@ -290,8 +317,8 @@ class PortfolioManager:
         
         if 'portfolio' not in user_data[user_id]:
             user_data[user_id]['portfolio'] = {
-                'initial_balance': 10000,  # Стартовый баланс
-                'current_balance': 10000,
+                'initial_balance': 0,  # Пользователь сам устанавливает баланс
+                'current_balance': 0,
                 'trades': [],
                 'performance': {
                     'total_trades': 0,
@@ -321,6 +348,10 @@ class PortfolioManager:
     @staticmethod
     def add_trade(user_id: int, trade_data: Dict):
         PortfolioManager.initialize_user_portfolio(user_id)
+        
+        # Ограничение на максимальное количество сделок (10)
+        if len(user_data[user_id]['portfolio']['trades']) >= 10:
+            raise ValueError("❌ Достигнут лимит в 10 сделок. Удалите старые сделки чтобы добавить новые.")
         
         trade_id = len(user_data[user_id]['portfolio']['trades']) + 1
         trade_data['id'] = trade_id
@@ -450,7 +481,6 @@ class PortfolioManager:
         
         recommendations = []
         
-        # Простые и понятные рекомендации для трейдеров
         if perf['total_trades'] == 0:
             recommendations.append("📊 Начните добавлять сделки для анализа вашей торговли")
             return recommendations
@@ -831,10 +861,74 @@ class ReportGenerator:
             logger.error(f"Ошибка генерации отчета портфеля: {e}")
             return "Ошибка при генерации отчета портфеля"
 
-# Обработчики портфеля
+# ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
+
+@log_performance
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Главное меню v4.0"""
+    try:
+        logger.info(f"Команда /start от пользователя {update.effective_user.id}")
+        
+        # Очистка предыдущих состояний для надежности
+        if context.user_data:
+            context.user_data.clear()
+        
+        user = update.message.from_user if update.message else update.callback_query.from_user
+        user_name = user.first_name or "Трейдер"
+        
+        welcome_text = f"""
+👋 *Привет, {user_name}!*
+
+🎯 PRO Калькулятор Управления Рисками v4.0
+
+⚡ *НОВЫЕ ВОЗМОЖНОСТИ:*
+• ✅ Многопозиционный расчет (до 10 сделок)
+• ✅ Анализ корреляций между активами  
+• ✅ Учет волатильности инструментов
+• ✅ Портфельные стратегии и рекомендации
+• ✅ Статистика за 5 лет по основным парам
+• ✅ Умные рекомендации для PRO трейдеров
+
+*Выберите опцию:*
+"""
+        
+        user_id = user.id
+        PortfolioManager.initialize_user_portfolio(user_id)
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 Профессиональный расчет", callback_data="pro_calculation")],
+            [InlineKeyboardButton("💼 Мой портфель", callback_data="portfolio")],
+            [InlineKeyboardButton("🔮 Расширенная аналитика", callback_data="analytics")],
+            [InlineKeyboardButton("📚 PRO Инструкции", callback_data="pro_info")]
+        ]
+        
+        if update.message:
+            await update.message.reply_text(
+                welcome_text, 
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await update.callback_query.edit_message_text(
+                welcome_text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        return MAIN_MENU
+    except Exception as e:
+        logger.error(f"Критическая ошибка в start: {e}")
+        if update.message:
+            await update.message.reply_text(
+                "🔄 Произошла ошибка. Попробуйте еще раз или используйте /start",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Перезапустить", callback_data="main_menu")]
+                ])
+            )
+        return MAIN_MENU
+
 @log_performance
 async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Главное меню портфеля с учетом режима нескольких сделок"""
+    """Главное меню портфеля"""
     try:
         if update.message:
             user_id = update.message.from_user.id
@@ -844,52 +938,26 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         PortfolioManager.initialize_user_portfolio(user_id)
         portfolio = user_data[user_id]['portfolio']
-        is_multi_mode = portfolio.get('multi_trade_mode', False)
         
-        if is_multi_mode:
-            # Режим нескольких сделок
-            portfolio_text = f"""
-💼 *PRO ПОРТФЕЛЬ - РЕЖИМ НЕСКОЛЬКИХ СДЕЛОК*
-
-🎯 *Предназначен для анализа портфеля из нескольких позиций*
-
-💰 *Баланс:* ${portfolio['current_balance']:,.2f}
-📊 *Сделки:* {len(portfolio['trades'])}
-🎯 *Win Rate:* {portfolio['performance']['win_rate']:.1f}%
-
-*Доступные опции для анализа:*
-"""
-            
-            keyboard = [
-                [InlineKeyboardButton("📈 Обзор сделок", callback_data="portfolio_trades")],
-                [InlineKeyboardButton("📊 Анализ эффективности", callback_data="portfolio_performance")],
-                [InlineKeyboardButton("🔗 Анализ корреляций", callback_data="portfolio_correlation")],
-                [InlineKeyboardButton("📄 Сгенерировать отчет", callback_data="portfolio_report")],
-                [InlineKeyboardButton("💾 Выгрузить отчет", callback_data="export_portfolio")],
-                [InlineKeyboardButton("🔮 Расширенная аналитика", callback_data="analytics")],
-                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-            ]
-        else:
-            # Обычный режим
-            portfolio_text = f"""
+        portfolio_text = f"""
 💼 *PRO ПОРТФЕЛЬ v4.0*
 
 💰 *Баланс:* ${portfolio['current_balance']:,.2f}
-📊 *Сделки:* {len(portfolio['trades'])}
+📊 *Сделки:* {len(portfolio['trades'])}/10
 🎯 *Win Rate:* {portfolio['performance']['win_rate']:.1f}%
 
 *Выберите опцию:*
 """
-            
-            keyboard = [
-                [InlineKeyboardButton("📈 Обзор сделок", callback_data="portfolio_trades")],
-                [InlineKeyboardButton("💰 Баланс и распределение", callback_data="portfolio_balance")],
-                [InlineKeyboardButton("📊 Анализ эффективности", callback_data="portfolio_performance")],
-                [InlineKeyboardButton("📄 Сгенерировать отчет", callback_data="portfolio_report")],
-                [InlineKeyboardButton("💾 Выгрузить отчет", callback_data="export_portfolio")],
-                [InlineKeyboardButton("➕ Добавить сделку", callback_data="portfolio_add_trade")],
-                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-            ]
+        
+        keyboard = [
+            [InlineKeyboardButton("📈 Обзор сделок", callback_data="portfolio_trades")],
+            [InlineKeyboardButton("💰 Баланс и распределение", callback_data="portfolio_balance")],
+            [InlineKeyboardButton("📊 Анализ эффективности", callback_data="portfolio_performance")],
+            [InlineKeyboardButton("📄 Сгенерировать отчет", callback_data="portfolio_report")],
+            [InlineKeyboardButton("💾 Выгрузить отчет", callback_data="export_portfolio")],
+            [InlineKeyboardButton("➕ Добавить сделку", callback_data="portfolio_add_trade")],
+            [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+        ]
         
         if update.message:
             await update.message.reply_text(
@@ -909,6 +977,430 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await handle_error(update, context, e)
 
 @log_performance
+async def start_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало профессионального расчета"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        keyboard = [
+            [InlineKeyboardButton("📈 Одна сделка", callback_data="single_trade")],
+            [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+        ]
+        
+        await query.edit_message_text(
+            "📊 *ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ*\n\n"
+            "🎯 Выберите тип расчета:",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return SINGLE_OR_MULTI
+    except Exception as e:
+        logger.error(f"Ошибка в start_pro_calculation: {e}")
+        await handle_error(update, context, e)
+
+@log_performance
+async def pro_select_instrument_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выбор типа инструмента"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        instrument_type = query.data.replace("pro_type_", "")
+        context.user_data['instrument_type'] = instrument_type
+        
+        presets = INSTRUMENT_PRESETS.get(instrument_type, [])
+        
+        keyboard = []
+        for preset in presets:
+            keyboard.append([InlineKeyboardButton(preset, callback_data=f"pro_preset_{preset}")])
+        keyboard.append([InlineKeyboardButton("✏️ Ввести свой инструмент", callback_data="pro_custom")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="pro_calculation")])
+        
+        await query.edit_message_text(
+            f"📊 *{INSTRUMENT_TYPES[instrument_type]}*\n\n"
+            "Выберите инструмент из списка или введите свой:",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return CUSTOM_INSTRUMENT
+    except Exception as e:
+        logger.error(f"Ошибка в pro_select_instrument_type: {e}")
+        await handle_error(update, context, e)
+
+# Продолжение в следующем сообщении...<｜end▁of▁thinking｜>Продолжаю код с основными обработчиками:
+
+```python
+@log_performance
+async def pro_select_instrument(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выбор инструмента"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        if query.data == "pro_custom":
+            await query.edit_message_text(
+                "✏️ *Введите название инструмента:*\n\n"
+                "Пример: EURUSD, BTCUSD, XAUUSD",
+                parse_mode='Markdown'
+            )
+            return CUSTOM_INSTRUMENT
+        else:
+            instrument = query.data.replace("pro_preset_", "")
+            context.user_data['instrument'] = instrument
+            
+            keyboard = [
+                [InlineKeyboardButton("📈 BUY", callback_data="BUY"),
+                 InlineKeyboardButton("📉 SELL", callback_data="SELL")],
+                [InlineKeyboardButton("🔙 Назад", callback_data=f"pro_type_{context.user_data['instrument_type']}")]
+            ]
+            
+            await query.edit_message_text(
+                f"🎯 *Инструмент:* {instrument}\n\n"
+                "Выберите направление сделки:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return DIRECTION
+    except Exception as e:
+        logger.error(f"Ошибка в pro_select_instrument: {e}")
+        await handle_error(update, context, e)
+
+@log_performance
+async def pro_handle_custom_instrument(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка пользовательского инструмента"""
+    try:
+        instrument = update.message.text.upper().strip()
+        
+        is_valid, validated_instrument, message = InputValidator.validate_instrument(instrument)
+        
+        if not is_valid:
+            await update.message.reply_text(
+                f"{message}\n\n✏️ Введите название инструмента:",
+                parse_mode='Markdown'
+            )
+            return CUSTOM_INSTRUMENT
+        
+        context.user_data['instrument'] = validated_instrument
+        
+        keyboard = [
+            [InlineKeyboardButton("📈 BUY", callback_data="BUY"),
+             InlineKeyboardButton("📉 SELL", callback_data="SELL")],
+            [InlineKeyboardButton("🔙 Назад", callback_data=f"pro_type_{context.user_data['instrument_type']}")]
+        ]
+        
+        await update.message.reply_text(
+            f"🎯 *Инструмент:* {validated_instrument}\n\n"
+            "Выберите направление сделки:",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return DIRECTION
+        
+    except Exception as e:
+        logger.error(f"Ошибка в pro_handle_custom_instrument: {e}")
+        await handle_error(update, context, e)
+
+@log_performance
+async def pro_select_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выбор направления сделки"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        direction = query.data
+        context.user_data['direction'] = direction
+        
+        keyboard = []
+        for risk in RISK_LEVELS:
+            keyboard.append([InlineKeyboardButton(risk, callback_data=f"pro_risk_{risk.replace('%', '')}")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="pro_custom" if 'custom' in context.user_data else f"pro_preset_{context.user_data['instrument']}")])
+        
+        await query.edit_message_text(
+            f"🎯 *{context.user_data['instrument']}* | *{direction}*\n\n"
+            "Выберите уровень риска (% от депозита):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return RISK_PERCENT
+    except Exception as e:
+        logger.error(f"Ошибка в pro_select_direction: {e}")
+        await handle_error(update, context, e)
+
+@log_performance
+async def pro_select_risk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выбор уровня риска"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        risk_percent = float(query.data.replace("pro_risk_", "")) / 100
+        context.user_data['risk_percent'] = risk_percent
+        
+        await query.edit_message_text(
+            f"💰 *Уровень риска:* {risk_percent*100}%\n\n"
+            "💵 Введите размер депозита:",
+            parse_mode='Markdown'
+        )
+        return DEPOSIT
+    except Exception as e:
+        logger.error(f"Ошибка в pro_select_risk: {e}")
+        await handle_error(update, context, e)
+
+@log_performance
+async def pro_handle_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка ввода депозита"""
+    try:
+        text = update.message.text
+        
+        is_valid, deposit, message = InputValidator.validate_number(text, 1, 1000000)
+        
+        if not is_valid:
+            await update.message.reply_text(
+                f"{message}\n\n💵 Введите размер депозита:",
+                parse_mode='Markdown'
+            )
+            return DEPOSIT
+        
+        context.user_data['deposit'] = deposit
+        
+        keyboard = []
+        for leverage in LEVERAGES:
+            keyboard.append([InlineKeyboardButton(leverage, callback_data=f"pro_leverage_{leverage}")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"pro_risk_{int(context.user_data['risk_percent']*100)}")])
+        
+        await update.message.reply_text(
+            f"💰 *Депозит:* ${deposit:,.2f}\n\n"
+            "⚖️ Выберите кредитное плечо:",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return LEVERAGE
+        
+    except Exception as e:
+        logger.error(f"Ошибка в pro_handle_deposit: {e}")
+        await handle_error(update, context, e)
+
+@log_performance
+async def pro_select_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выбор плеча"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        leverage = query.data.replace("pro_leverage_", "")
+        context.user_data['leverage'] = leverage
+        
+        await query.edit_message_text(
+            f"⚖️ *Плечо:* {leverage}\n\n"
+            "💎 Введите цену входа:",
+            parse_mode='Markdown'
+        )
+        return ENTRY
+    except Exception as e:
+        logger.error(f"Ошибка в pro_select_leverage: {e}")
+        await handle_error(update, context, e)
+
+@log_performance
+async def pro_handle_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка цены входа"""
+    try:
+        text = update.message.text
+        
+        is_valid, entry_price, message = InputValidator.validate_price(text)
+        
+        if not is_valid:
+            await update.message.reply_text(
+                f"{message}\n\n💎 Введите цену входа:",
+                parse_mode='Markdown'
+            )
+            return ENTRY
+        
+        context.user_data['entry_price'] = entry_price
+        
+        direction = context.user_data.get('direction', 'BUY')
+        direction_text = "ниже" if direction == "BUY" else "выше"
+        
+        await update.message.reply_text(
+            f"💎 *Цена входа:* {entry_price}\n\n"
+            f"🛑 Введите цену стоп-лосса ({direction_text} цены входа):",
+            parse_mode='Markdown'
+        )
+        return STOP_LOSS
+        
+    except Exception as e:
+        logger.error(f"Ошибка в pro_handle_entry: {e}")
+        await handle_error(update, context, e)
+
+@log_performance
+async def pro_handle_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка стоп-лосса"""
+    try:
+        text = update.message.text
+        
+        is_valid, stop_loss, message = InputValidator.validate_price(text)
+        
+        if not is_valid:
+            await update.message.reply_text(
+                f"{message}\n\n🛑 Введите цену стоп-лосса:",
+                parse_mode='Markdown'
+            )
+            return STOP_LOSS
+        
+        context.user_data['stop_loss'] = stop_loss
+        
+        await update.message.reply_text(
+            f"🛑 *Стоп-лосс:* {stop_loss}\n\n"
+            "🎯 Введите цену тейк-профита:",
+            parse_mode='Markdown'
+        )
+        return TAKE_PROFIT_SINGLE
+        
+    except Exception as e:
+        logger.error(f"Ошибка в pro_handle_stop_loss: {e}")
+        await handle_error(update, context, e)
+
+@log_performance
+async def pro_handle_take_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка тейк-профита"""
+    try:
+        text = update.message.text
+        
+        is_valid, take_profit, message = InputValidator.validate_price(text)
+        
+        if not is_valid:
+            await update.message.reply_text(
+                f"{message}\n\n🎯 Введите цену тейк-профита:",
+                parse_mode='Markdown'
+            )
+            return TAKE_PROFIT_SINGLE
+        
+        context.user_data['take_profit'] = take_profit
+        
+        return await pro_calculate_and_show_results(update, context)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в pro_handle_take_profit: {e}")
+        await handle_error(update, context, e)
+
+@log_performance
+async def pro_calculate_and_show_results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Расчет и показ результатов"""
+    try:
+        user_data_context = context.user_data
+        
+        deposit = user_data_context['deposit']
+        leverage = user_data_context['leverage']
+        instrument_type = user_data_context['instrument_type']
+        instrument = user_data_context['instrument']
+        entry_price = user_data_context['entry_price']
+        stop_loss = user_data_context['stop_loss']
+        take_profit = user_data_context['take_profit']
+        direction = user_data_context['direction']
+        risk_percent = user_data_context['risk_percent']
+        
+        calculation = FastRiskCalculator.calculate_position_size_fast(
+            deposit=deposit,
+            leverage=leverage,
+            instrument_type=instrument_type,
+            currency_pair=instrument,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            direction=direction,
+            risk_percent=risk_percent
+        )
+        
+        is_profitable = calculation.get('is_profitable', True)
+        status_emoji = "🟢" if is_profitable else "🔴"
+        status_text = "ПРИБЫЛЬНАЯ" if is_profitable else "УБЫТОЧНАЯ"
+        
+        result_text = f"""
+🎯 *РЕЗУЛЬТАТЫ ПРОФЕССИОНАЛЬНОГО РАСЧЕТА*
+{status_emoji} *СТАТУС: {status_text}*
+
+📊 *Параметры сделки:*
+• 💰 Инструмент: {instrument}
+• 📈 Направление: {direction}
+• 💵 Депозит: ${deposit:,.2f}
+• ⚖️ Плечо: {leverage}
+• 🎯 Риск: {risk_percent*100}%
+
+💎 *Цены:*
+• Вход: {entry_price}
+• Стоп-лосс: {stop_loss}
+• Тейк-профит: {take_profit}
+• Дистанция SL: {calculation['stop_pips']:.2f} пунктов
+• Дистанция TP: {calculation['take_profit_pips']:.2f} пунктов
+
+📈 *Результаты расчета:*
+• 📦 Размер позиции: {calculation['position_size']:.2f} лотов
+• 💸 Сумма риска: ${calculation['risk_amount']:.2f}
+• 💰 Потенциальная прибыль: ${calculation['potential_profit']:.2f}
+• 📉 Потенциальный убыток: ${calculation['potential_loss']:.2f}
+• ⚖️ Соотношение прибыль/риск: {calculation['reward_risk_ratio']:.2f}
+• 🏦 Требуемая маржа: ${calculation['required_margin']:.2f}
+• 💵 Свободная маржа: ${calculation['free_margin']:.2f}
+• 📊 Риск в %: {calculation['risk_percent']:.2f}%
+
+💡 *Профессиональные рекомендации:*
+{ReportGenerator.get_professional_recommendations(calculation, user_data_context)}
+"""
+        
+        keyboard = [
+            [InlineKeyboardButton("💾 Выгрузить расчет", callback_data="export_calculation")],
+            [InlineKeyboardButton("💼 Сохранить сделку", callback_data="save_trade_from_pro")],
+            [InlineKeyboardButton("📊 Новый расчет", callback_data="pro_calculation")],
+            [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+        ]
+        
+        if hasattr(update, 'message'):
+            await update.message.reply_text(
+                result_text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await update.callback_query.edit_message_text(
+                result_text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        
+        context.user_data['last_calculation'] = calculation
+        context.user_data['calculation_data'] = {
+            'instrument': instrument,
+            'direction': direction,
+            'deposit': deposit,
+            'leverage': leverage,
+            'risk_percent': risk_percent,
+            'entry_price': entry_price,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit,
+            'position_size': calculation['position_size'],
+            'potential_profit': calculation['potential_profit'],
+            'potential_loss': calculation['potential_loss'],
+            'is_profitable': is_profitable
+        }
+        
+        return ConversationHandler.END
+        
+    except Exception as e:
+        logger.error(f"Ошибка в pro_calculate_and_show_results: {e}")
+        error_msg = "❌ Произошла ошибка при расчете. Попробуйте еще раз."
+        if hasattr(update, 'message'):
+            await update.message.reply_text(
+                error_msg,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+            )
+        else:
+            await update.callback_query.edit_message_text(
+                error_msg,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+            )
+        return ConversationHandler.END
+
+@log_performance
 async def portfolio_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать обзор сделок"""
     try:
@@ -925,6 +1417,7 @@ async def portfolio_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Используйте кнопку '➕ Добавить сделку' чтобы начать.",
                 parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("➕ Добавить сделку", callback_data="portfolio_add_trade")],
                     [InlineKeyboardButton("🔙 Назад", callback_data="portfolio")]
                 ])
             )
@@ -943,12 +1436,13 @@ async def portfolio_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📅 {trade.get('timestamp', '')[:16]}\n\n"
             )
         
-        trades_text += f"📊 Всего сделок: {len(trades)}"
+        trades_text += f"📊 Всего сделок: {len(trades)}/10"
         
         await query.edit_message_text(
             trades_text,
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Добавить сделку", callback_data="portfolio_add_trade")],
                 [InlineKeyboardButton("🔙 Назад", callback_data="portfolio")]
             ])
         )
@@ -1147,7 +1641,6 @@ async def handle_deposit_amount(update: Update, context: ContextTypes.DEFAULT_TY
         user_id = update.message.from_user.id
         text = update.message.text
         
-        # Валидация ввода
         is_valid, amount, message = InputValidator.validate_number(text, 1, 1000000)
         
         if not is_valid:
@@ -1186,7 +1679,6 @@ async def handle_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_T
         user_id = update.message.from_user.id
         text = update.message.text
         
-        # Валидация ввода
         is_valid, amount, message = InputValidator.validate_number(text, 1, 1000000)
         
         if not is_valid:
@@ -1196,7 +1688,6 @@ async def handle_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_T
             )
             return WITHDRAW_AMOUNT
         
-        # Проверка достаточности средств
         current_balance = user_data[user_id]['portfolio']['current_balance']
         if amount > current_balance:
             await update.message.reply_text(
@@ -1230,842 +1721,28 @@ async def handle_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_T
         )
         return WITHDRAW_AMOUNT
 
-# НОВЫЕ ОБРАБОТЧИКИ ДЛЯ МНОГОПОЗИЦИОННОГО РАСЧЕТА
-@log_performance
-async def start_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начало профессионального расчета с выбором типа расчета"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        
-        await query.edit_message_text(
-            "📊 *ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ*\n\n"
-            "🎯 У вас одна сделка или несколько сделок (до 10)?",
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📈 Одна сделка", callback_data="single_trade")],
-                [InlineKeyboardButton("📊 Несколько сделок", callback_data="multi_trade")],
-                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-            ])
-        )
-        return SINGLE_OR_MULTI
-    except Exception as e:
-        logger.error(f"Ошибка в start_pro_calculation: {e}")
-        await handle_error(update, context, e)
-
-@log_performance
-async def handle_single_or_multi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка выбора типа расчета"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        
-        choice = query.data
-        user_id = query.from_user.id
-        
-        if choice == "single_trade":
-            # Одиночная сделка - переходим к выбору инструмента
-            keyboard = []
-            for key, value in INSTRUMENT_TYPES.items():
-                keyboard.append([InlineKeyboardButton(value, callback_data=f"pro_type_{key}")])
-            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="pro_calculation")])
-            
-            await query.edit_message_text(
-                "📊 *ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ - ОДНА СДЕЛКА*\n\n"
-                "🎯 Выберите тип инструмента:",
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return INSTRUMENT_TYPE
-            
-        elif choice == "multi_trade":
-            # Многопозиционный расчет - переходим в портфель
-            PortfolioManager.initialize_user_portfolio(user_id)
-            user_data[user_id]['portfolio']['multi_trade_mode'] = True
-            
-            portfolio = user_data[user_id]['portfolio']
-            
-            portfolio_text = f"""
-💼 *PRO ПОРТФЕЛЬ - РЕЖИМ НЕСКОЛЬКИХ СДЕЛОК*
-
-📊 *Режим анализа нескольких позиций (до 10)*
-
-💰 *Баланс:* ${portfolio['current_balance']:,.2f}
-📈 *Сделок в портфеле:* {len(portfolio['trades'])}
-
-*Выберите опцию:*
-"""
-            
-            keyboard = [
-                [InlineKeyboardButton("📈 Обзор сделок", callback_data="portfolio_trades")],
-                [InlineKeyboardButton("📊 Анализ эффективности", callback_data="portfolio_performance")],
-                [InlineKeyboardButton("🔗 Анализ корреляций", callback_data="portfolio_correlation")],
-                [InlineKeyboardButton("📄 Сгенерировать отчет", callback_data="portfolio_report")],
-                [InlineKeyboardButton("🔮 Расширенная аналитика", callback_data="analytics")],
-                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-            ]
-            
-            await query.edit_message_text(
-                portfolio_text,
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return PORTFOLIO_MENU
-            
-    except Exception as e:
-        logger.error(f"Ошибка в handle_single_or_multi: {e}")
-        await handle_error(update, context, e)
-
-# НЕОБХОДИМЫЕ ОБРАБОТЧИКИ ДЛЯ ПРОФЕССИОНАЛЬНОГО РАСЧЕТА
-@log_performance
-async def pro_select_instrument_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Выбор типа инструмента для профессионального расчета"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        
-        instrument_type = query.data.replace("pro_type_", "")
-        context.user_data['instrument_type'] = instrument_type
-        
-        # Показать пресеты для выбранного типа
-        presets = INSTRUMENT_PRESETS.get(instrument_type, [])
-        
-        keyboard = []
-        for preset in presets:
-            keyboard.append([InlineKeyboardButton(preset, callback_data=f"pro_preset_{preset}")])
-        keyboard.append([InlineKeyboardButton("✏️ Ввести свой инструмент", callback_data="pro_custom")])
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="pro_calculation")])
-        
-        await query.edit_message_text(
-            f"📊 *{INSTRUMENT_TYPES[instrument_type]}*\n\n"
-            "Выберите инструмент из списка или введите свой:",
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return CUSTOM_INSTRUMENT
-    except Exception as e:
-        logger.error(f"Ошибка в pro_select_instrument_type: {e}")
-        await handle_error(update, context, e)
-
-@log_performance
-async def pro_select_instrument(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Выбор конкретного инструмента"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        
-        if query.data == "pro_custom":
-            await query.edit_message_text(
-                "✏️ *Введите название инструмента:*\n\n"
-                "Пример: EURUSD, BTCUSD, XAUUSD",
-                parse_mode='Markdown'
-            )
-            return CUSTOM_INSTRUMENT
-        else:
-            instrument = query.data.replace("pro_preset_", "")
-            context.user_data['instrument'] = instrument
-            
-            keyboard = [
-                [InlineKeyboardButton("📈 BUY", callback_data="BUY"),
-                 InlineKeyboardButton("📉 SELL", callback_data="SELL")],
-                [InlineKeyboardButton("🔙 Назад", callback_data=f"pro_type_{context.user_data['instrument_type']}")]
-            ]
-            
-            await query.edit_message_text(
-                f"🎯 *Инструмент:* {instrument}\n\n"
-                "Выберите направление сделки:",
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return DIRECTION
-    except Exception as e:
-        logger.error(f"Ошибка в pro_select_instrument: {e}")
-        await handle_error(update, context, e)
-
-@log_performance
-async def pro_handle_custom_instrument(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка ввода пользовательского инструмента"""
-    try:
-        user_id = update.message.from_user.id
-        instrument = update.message.text.upper().strip()
-        
-        # Валидация инструмента
-        is_valid, validated_instrument, message = InputValidator.validate_instrument(instrument)
-        
-        if not is_valid:
-            await update.message.reply_text(
-                f"{message}\n\n✏️ Введите название инструмента:",
-                parse_mode='Markdown'
-            )
-            return CUSTOM_INSTRUMENT
-        
-        context.user_data['instrument'] = validated_instrument
-        
-        keyboard = [
-            [InlineKeyboardButton("📈 BUY", callback_data="BUY"),
-             InlineKeyboardButton("📉 SELL", callback_data="SELL")],
-            [InlineKeyboardButton("🔙 Назад", callback_data=f"pro_type_{context.user_data['instrument_type']}")]
-        ]
-        
-        await update.message.reply_text(
-            f"🎯 *Инструмент:* {validated_instrument}\n\n"
-            "Выберите направление сделки:",
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return DIRECTION
-        
-    except Exception as e:
-        logger.error(f"Ошибка в pro_handle_custom_instrument: {e}")
-        await handle_error(update, context, e)
-
-@log_performance
-async def pro_select_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Выбор направления сделки"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        
-        direction = query.data
-        context.user_data['direction'] = direction
-        
-        # Используем настройки по умолчанию или запрашиваем риск
-        user_id = query.from_user.id
-        PortfolioManager.initialize_user_portfolio(user_id)
-        default_risk = user_data[user_id]['portfolio']['settings']['default_risk']
-        
-        keyboard = []
-        for risk in RISK_LEVELS:
-            keyboard.append([InlineKeyboardButton(risk, callback_data=f"pro_risk_{risk.replace('%', '')}")])
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="pro_custom" if 'custom' in context.user_data else f"pro_preset_{context.user_data['instrument']}")])
-        
-        await query.edit_message_text(
-            f"🎯 *{context.user_data['instrument']}* | *{direction}*\n\n"
-            "Выберите уровень риска (% от депозита):",
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return RISK_PERCENT
-    except Exception as e:
-        logger.error(f"Ошибка в pro_select_direction: {e}")
-        await handle_error(update, context, e)
-
-@log_performance
-async def pro_select_risk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Выбор уровня риска"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        
-        risk_percent = float(query.data.replace("pro_risk_", "")) / 100
-        context.user_data['risk_percent'] = risk_percent
-        
-        await query.edit_message_text(
-            f"💰 *Уровень риска:* {risk_percent*100}%\n\n"
-            "💵 Введите размер депозита:",
-            parse_mode='Markdown'
-        )
-        return DEPOSIT
-    except Exception as e:
-        logger.error(f"Ошибка в pro_select_risk: {e}")
-        await handle_error(update, context, e)
-
-@log_performance
-async def pro_handle_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка ввода депозита"""
-    try:
-        user_id = update.message.from_user.id
-        text = update.message.text
-        
-        # Валидация депозита
-        is_valid, deposit, message = InputValidator.validate_number(text, 1, 1000000)
-        
-        if not is_valid:
-            await update.message.reply_text(
-                f"{message}\n\n💵 Введите размер депозита:",
-                parse_mode='Markdown'
-            )
-            return DEPOSIT
-        
-        context.user_data['deposit'] = deposit
-        
-        # Используем настройки по умолчанию или предлагаем выбор
-        PortfolioManager.initialize_user_portfolio(user_id)
-        default_leverage = user_data[user_id]['portfolio']['settings']['leverage']
-        
-        keyboard = []
-        for leverage in LEVERAGES:
-            keyboard.append([InlineKeyboardButton(leverage, callback_data=f"pro_leverage_{leverage}")])
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"pro_risk_{int(context.user_data['risk_percent']*100)}")])
-        
-        await update.message.reply_text(
-            f"💰 *Депозит:* ${deposit:,.2f}\n\n"
-            "⚖️ Выберите кредитное плечо:",
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return LEVERAGE
-        
-    except Exception as e:
-        logger.error(f"Ошибка в pro_handle_deposit: {e}")
-        await handle_error(update, context, e)
-
-@log_performance
-async def pro_select_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Выбор плеча"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        
-        leverage = query.data.replace("pro_leverage_", "")
-        context.user_data['leverage'] = leverage
-        
-        await query.edit_message_text(
-            f"⚖️ *Плечо:* {leverage}\n\n"
-            "💎 Введите цену входа:",
-            parse_mode='Markdown'
-        )
-        return ENTRY
-    except Exception as e:
-        logger.error(f"Ошибка в pro_select_leverage: {e}")
-        await handle_error(update, context, e)
-
-@log_performance
-async def pro_handle_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка цены входа"""
-    try:
-        text = update.message.text
-        
-        # Валидация цены
-        is_valid, entry_price, message = InputValidator.validate_price(text)
-        
-        if not is_valid:
-            await update.message.reply_text(
-                f"{message}\n\n💎 Введите цену входа:",
-                parse_mode='Markdown'
-            )
-            return ENTRY
-        
-        context.user_data['entry_price'] = entry_price
-        
-        direction = context.user_data.get('direction', 'BUY')
-        direction_text = "ниже" if direction == "BUY" else "выше"
-        
-        await update.message.reply_text(
-            f"💎 *Цена входа:* {entry_price}\n\n"
-            f"🛑 Введите цену стоп-лосса ({direction_text} цены входа):",
-            parse_mode='Markdown'
-        )
-        return STOP_LOSS
-        
-    except Exception as e:
-        logger.error(f"Ошибка в pro_handle_entry: {e}")
-        await handle_error(update, context, e)
-
-@log_performance
-async def pro_handle_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка стоп-лосса"""
-    try:
-        text = update.message.text
-        
-        # Валидация цены
-        is_valid, stop_loss, message = InputValidator.validate_price(text)
-        
-        if not is_valid:
-            await update.message.reply_text(
-                f"{message}\n\n🛑 Введите цену стоп-лосса:",
-                parse_mode='Markdown'
-            )
-            return STOP_LOSS
-        
-        context.user_data['stop_loss'] = stop_loss
-        
-        await update.message.reply_text(
-            f"🛑 *Стоп-лосс:* {stop_loss}\n\n"
-            "🎯 Введите цену тейк-профита:",
-            parse_mode='Markdown'
-        )
-        return TAKE_PROFIT_SINGLE
-        
-    except Exception as e:
-        logger.error(f"Ошибка в pro_handle_stop_loss: {e}")
-        await handle_error(update, context, e)
-
-@log_performance
-async def pro_handle_take_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка тейк-профита"""
-    try:
-        text = update.message.text
-        
-        # Валидация цены
-        is_valid, take_profit, message = InputValidator.validate_price(text)
-        
-        if not is_valid:
-            await update.message.reply_text(
-                f"{message}\n\n🎯 Введите цену тейк-профита:",
-                parse_mode='Markdown'
-            )
-            return TAKE_PROFIT_SINGLE
-        
-        context.user_data['take_profit'] = take_profit
-        
-        # Расчет и вывод результатов
-        return await pro_calculate_and_show_results(update, context)
-        
-    except Exception as e:
-        logger.error(f"Ошибка в pro_handle_take_profit: {e}")
-        await handle_error(update, context, e)
-
-@log_performance
-async def pro_calculate_and_show_results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Расчет и показ результатов с тейк-профитом"""
-    try:
-        user_data_context = context.user_data
-        
-        # Получаем все необходимые данные
-        deposit = user_data_context['deposit']
-        leverage = user_data_context['leverage']
-        instrument_type = user_data_context['instrument_type']
-        instrument = user_data_context['instrument']
-        entry_price = user_data_context['entry_price']
-        stop_loss = user_data_context['stop_loss']
-        take_profit = user_data_context['take_profit']
-        direction = user_data_context['direction']
-        risk_percent = user_data_context['risk_percent']
-        
-        # Выполняем расчет
-        calculation = FastRiskCalculator.calculate_position_size_fast(
-            deposit=deposit,
-            leverage=leverage,
-            instrument_type=instrument_type,
-            currency_pair=instrument,
-            entry_price=entry_price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            direction=direction,
-            risk_percent=risk_percent
-        )
-        
-        # Определяем статус сделки
-        is_profitable = calculation.get('is_profitable', True)
-        status_emoji = "🟢" if is_profitable else "🔴"
-        status_text = "ПРИБЫЛЬНАЯ" if is_profitable else "УБЫТОЧНАЯ"
-        
-        # Формируем результат
-        result_text = f"""
-🎯 *РЕЗУЛЬТАТЫ ПРОФЕССИОНАЛЬНОГО РАСЧЕТА*
-{status_emoji} *СТАТУС: {status_text}*
-
-📊 *Параметры сделки:*
-• 💰 Инструмент: {instrument}
-• 📈 Направление: {direction}
-• 💵 Депозит: ${deposit:,.2f}
-• ⚖️ Плечо: {leverage}
-• 🎯 Риск: {risk_percent*100}%
-
-💎 *Цены:*
-• Вход: {entry_price}
-• Стоп-лосс: {stop_loss}
-• Тейк-профит: {take_profit}
-• Дистанция SL: {calculation['stop_pips']:.2f} пунктов
-• Дистанция TP: {calculation['take_profit_pips']:.2f} пунктов
-
-📈 *Результаты расчета:*
-• 📦 Размер позиции: {calculation['position_size']:.2f} лотов
-• 💸 Сумма риска: ${calculation['risk_amount']:.2f}
-• 💰 Потенциальная прибыль: ${calculation['potential_profit']:.2f}
-• 📉 Потенциальный убыток: ${calculation['potential_loss']:.2f}
-• ⚖️ Соотношение прибыль/риск: {calculation['reward_risk_ratio']:.2f}
-• 🏦 Требуемая маржа: ${calculation['required_margin']:.2f}
-• 💵 Свободная маржа: ${calculation['free_margin']:.2f}
-• 📊 Риск в %: {calculation['risk_percent']:.2f}%
-
-💡 *Профессиональные рекомендации:*
-{ReportGenerator.get_professional_recommendations(calculation, user_data_context)}
-"""
-        
-        keyboard = [
-            [InlineKeyboardButton("💾 Выгрузить расчет", callback_data="export_calculation")],
-            [InlineKeyboardButton("💼 Сохранить сделку", callback_data="save_trade_from_pro")],
-            [InlineKeyboardButton("📊 Новый расчет", callback_data="pro_calculation")],
-            [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-        ]
-        
-        if hasattr(update, 'message'):
-            await update.message.reply_text(
-                result_text,
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        else:
-            await update.callback_query.edit_message_text(
-                result_text,
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        
-        # Сохраняем данные расчета для возможного сохранения
-        context.user_data['last_calculation'] = calculation
-        context.user_data['calculation_data'] = {
-            'instrument': instrument,
-            'direction': direction,
-            'deposit': deposit,
-            'leverage': leverage,
-            'risk_percent': risk_percent,
-            'entry_price': entry_price,
-            'stop_loss': stop_loss,
-            'take_profit': take_profit,
-            'position_size': calculation['position_size'],
-            'potential_profit': calculation['potential_profit'],
-            'potential_loss': calculation['potential_loss'],
-            'is_profitable': is_profitable
-        }
-        
-        return ConversationHandler.END
-        
-    except Exception as e:
-        logger.error(f"Ошибка в pro_calculate_and_show_results: {e}")
-        error_msg = "❌ Произошла ошибка при расчете. Попробуйте еще раз."
-        if hasattr(update, 'message'):
-            await update.message.reply_text(
-                error_msg,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
-            )
-        else:
-            await update.callback_query.edit_message_text(
-                error_msg,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
-            )
-        return ConversationHandler.END
-
-@log_performance
-async def portfolio_correlation_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Анализ корреляций в портфеле"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        user_id = query.from_user.id
-        
-        portfolio = user_data[user_id].get('portfolio', {})
-        trades = portfolio.get('trades', [])
-        
-        if len(trades) < 2:
-            await query.edit_message_text(
-                "📊 *АНАЛИЗ КОРРЕЛЯЦИЙ*\n\n"
-                "ℹ️ Для анализа корреляций нужно минимум 2 сделки в портфеле.\n\n"
-                "Добавьте сделки через режим одиночного расчета.",
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📊 Одиночный расчет", callback_data="single_trade")],
-                    [InlineKeyboardButton("🔙 Назад", callback_data="portfolio")]
-                ])
-            )
-            return
-        
-        # Анализ корреляций
-        corr_analysis = PortfolioAnalyzer.analyze_correlations(trades)
-        vol_analysis = PortfolioAnalyzer.analyze_volatility(trades)
-        
-        analysis_text = "🔗 *УГЛУБЛЕННЫЙ АНАЛИЗ КОРРЕЛЯЦИЙ*\n\n"
-        
-        analysis_text += "📈 *КОРРЕЛЯЦИОННЫЙ АНАЛИЗ:*\n"
-        for i, analysis in enumerate(corr_analysis[:5], 1):
-            analysis_text += f"{i}. {analysis}\n"
-        
-        analysis_text += "\n⚡ *АНАЛИЗ ВОЛАТИЛЬНОСТИ:*\n"
-        for i, analysis in enumerate(vol_analysis[:3], 1):
-            analysis_text += f"{i}. {analysis}\n"
-        
-        # Рекомендации
-        analysis_text += "\n💡 *СТРАТЕГИЧЕСКИЕ РЕКОМЕНДАЦИИ:*\n"
-        if len(trades) >= 3:
-            strategies = PortfolioAnalyzer.generate_portfolio_strategies(trades)
-            for strategy in strategies[:8]:  # Ограничиваем вывод
-                analysis_text += f"{strategy}\n"
-        else:
-            analysis_text += "• Добавьте больше позиций для детального анализа\n"
-            analysis_text += "• Диверсифицируйте по типам активов\n"
-            analysis_text += "• Учитывайте корреляции при открытии позиций\n"
-        
-        await query.edit_message_text(
-            analysis_text,
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📊 Профессиональный расчет", callback_data="pro_calculation")],
-                [InlineKeyboardButton("🔮 Расширенная аналитика", callback_data="analytics")],
-                [InlineKeyboardButton("🔙 Назад", callback_data="portfolio")]
-            ])
-        )
-        
-    except Exception as e:
-        logger.error(f"Ошибка в portfolio_correlation_analysis: {e}")
-        await handle_error(update, context, e)
-
-# УЛУЧШЕННАЯ ФУНКЦИЯ - АНАЛИТИКА С УЧЕТОМ КОРРЕЛЯЦИЙ
-@log_performance
-async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Раздел аналитики с учетом корреляций и волатильности"""
-    try:
-        if update.message:
-            user_id = update.message.from_user.id
-        else:
-            user_id = update.callback_query.from_user.id
-            await update.callback_query.answer()
-        
-        PortfolioManager.initialize_user_portfolio(user_id)
-        portfolio = user_data[user_id]['portfolio']
-        trades = portfolio.get('trades', [])
-        performance = portfolio['performance']
-        
-        analytics_text = f"""
-🔮 *PRO АНАЛИТИКА И СТАТИСТИКА v4.0*
-
-📊 *ВАША ТОРГОВАЯ ЭФФЕКТИВНОСТЬ:*
-• 💰 Баланс: ${portfolio['current_balance']:,.2f}
-• 📈 Всего сделок: {performance['total_trades']}
-• 🎯 Win Rate: {performance['win_rate']:.1f}%
-• ⚖️ Profit Factor: {performance['profit_factor']:.2f}
-• 📉 Макс. просадка: {performance['max_drawdown']:.1f}%
-
-"""
-        
-        if trades:
-            # Анализ корреляций
-            corr_analysis = PortfolioAnalyzer.analyze_correlations(trades)
-            vol_analysis = PortfolioAnalyzer.analyze_volatility(trades)
-            metrics = PortfolioAnalyzer.calculate_portfolio_metrics(trades)
-            
-            analytics_text += "🔗 *АНАЛИЗ КОРРЕЛЯЦИЙ ПОРТФЕЛЯ:*\n"
-            for i, analysis in enumerate(corr_analysis[:3], 1):
-                analytics_text += f"{i}. {analysis}\n"
-            
-            analytics_text += "\n⚡ *АНАЛИЗ ВОЛАТИЛЬНОСТИ:*\n"
-            for i, analysis in enumerate(vol_analysis[:2], 1):
-                analytics_text += f"{i}. {analysis}\n"
-            
-            if metrics:
-                analytics_text += f"\n📊 *МЕТРИКИ ПОРТФЕЛЯ:*\n"
-                analytics_text += f"• Общий риск: {metrics['total_risk']:.1f}%\n"
-                analytics_text += f"• Диверсификация: {metrics['diversity_score']:.0%}\n"
-                analytics_text += f"• Баланс направлений: {metrics['direction_balance']:.0%}\n"
-            
-            analytics_text += "\n🎯 *PRO СТРАТЕГИИ ДЛЯ ВАШЕГО ПОРТФЕЛЯ:*\n"
-            strategies = PortfolioAnalyzer.generate_portfolio_strategies(trades)
-            for strategy in strategies[:6]:
-                analytics_text += f"{strategy}\n"
-                
-        else:
-            analytics_text += """
-💡 *ДЛЯ ПОЛУЧЕНИЯ ДЕТАЛЬНОЙ АНАЛИТИКИ:*
-• Начните с профессионального расчета одной сделки
-• Или перейдите в режим нескольких сделок для портфельного анализа
-• Система учитывает корреляции, волатильность и риски
-
-📈 *СТАТИСТИЧЕСКИЕ ИНСАЙТЫ:*
-• 78% успешных трейдеров используют корреляционный анализ
-• Диверсификация снижает просадку на 40-60%
-• Учет волатильности повышает точность стоп-лоссов на 35%
-"""
-        
-        analytics_text += """
-
-🚀 *БУДУЩИЕ ВОЗМОЖНОСТИ:*
-• 🤖 AI-ассистент для прогноза движения цен
-• 📱 Мобильная версия PRO трейдера
-• 🔄 Автоматическая ребалансировка портфеля
-• 🌍 Глобальный мониторинг рыночных условий
-• 💬 Сообщество PRO трейдеров
-
-*PRO v4.0 | Умная аналитика • Корреляции • Волатильность* 🚀
-"""
-        
-        keyboard = [
-            [InlineKeyboardButton("📊 Профессиональный расчет", callback_data="pro_calculation")],
-            [InlineKeyboardButton("💼 Мой портфель", callback_data="portfolio")],
-            [InlineKeyboardButton("📈 Анализ корреляций", callback_data="portfolio_correlation")],
-            [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-        ]
-        
-        if update.message:
-            await update.message.reply_text(
-                analytics_text,
-                parse_mode='Markdown',
-                disable_web_page_preview=True,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        else:
-            await update.callback_query.edit_message_text(
-                analytics_text,
-                parse_mode='Markdown',
-                disable_web_page_preview=True,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        return ANALYTICS_MENU
-    except Exception as e:
-        logger.error(f"Ошибка в analytics_command: {e}")
-        await handle_error(update, context, e)
-
-# НОВАЯ ФУНКЦИЯ: Сохранение сделки из профессионального расчета
-@log_performance
-async def save_trade_from_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сохранение сделки из профессионального расчета в портфель"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        user_id = query.from_user.id
-        
-        calculation_data = context.user_data.get('calculation_data', {})
-        if not calculation_data:
-            await query.edit_message_text(
-                "❌ Нет данных о последнем расчете для сохранения сделки.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
-            )
-            return
-        
-        # Определяем прибыль/убыток
-        if calculation_data['is_profitable']:
-            profit = calculation_data['potential_profit']
-        else:
-            profit = -calculation_data['potential_loss']
-        
-        # Создаем данные сделки
-        trade_data = {
-            'instrument': calculation_data['instrument'],
-            'direction': calculation_data['direction'],
-            'entry_price': calculation_data['entry_price'],
-            'exit_price': calculation_data['take_profit'],
-            'stop_loss': calculation_data['stop_loss'],
-            'volume': calculation_data['position_size'],
-            'profit': profit,
-            'status': 'closed',
-            'calculated': True
-        }
-        
-        # Добавляем сделку в портфель
-        trade_id = PortfolioManager.add_trade(user_id, trade_data)
-        
-        profit_text = "прибылью" if profit > 0 else "убытком"
-        
-        await query.edit_message_text(
-            f"✅ *Сделка #{trade_id} успешно сохранена в портфель!*\n\n"
-            f"📊 *Детали сделки:*\n"
-            f"• 💰 Инструмент: {trade_data['instrument']}\n"
-            f"• 📈 Направление: {trade_data['direction']}\n"
-            f"• 💎 Вход: {trade_data['entry_price']}\n"
-            f"• 🎯 Выход: {trade_data['exit_price']}\n"
-            f"• 🛑 Стоп-лосс: {trade_data['stop_loss']}\n"
-            f"• 📦 Объем: {trade_data['volume']:.2f} лотов\n"
-            f"• 💵 Результат: ${profit:.2f}\n\n"
-            f"Сделка добавлена в ваш торговый портфель с {profit_text}.",
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💼 Портфель", callback_data="portfolio")],
-                [InlineKeyboardButton("📊 Новый расчет", callback_data="pro_calculation")],
-                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-            ])
-        )
-        
-    except Exception as e:
-        logger.error(f"Ошибка при сохранении сделки из про расчета: {e}")
-        await query.edit_message_text(
-            "❌ Ошибка при сохранении сделки в портфель.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
-        )
-
-# Функции выгрузки отчетов
-@log_performance
-async def export_calculation_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выгрузка отчета расчета"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        
-        user_data_context = context.user_data
-        calculation = user_data_context.get('last_calculation', {})
-        
-        if not calculation:
-            await query.edit_message_text(
-                "❌ Нет данных для выгрузки",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]])
-            )
-            return
-        
-        report_text = ReportGenerator.generate_calculation_report(calculation, user_data_context)
-        
-        # Создаем файл в памяти
-        report_bytes = report_text.encode('utf-8')
-        report_file = io.BytesIO(report_bytes)
-        report_file.name = f"calculation_report_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
-        
-        await query.message.reply_document(
-            document=report_file,
-            filename=report_file.name,
-            caption="📊 *Отчет расчета позиции*\n\nФайл готов для сохранения!",
-            parse_mode='Markdown'
-        )
-        
-        await query.edit_message_text(
-            "✅ *Отчет успешно выгружен!*\n\nФайл отправлен в чат.",
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📊 Новый расчет", callback_data="pro_calculation")],
-                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-            ])
-        )
-        
-    except Exception as e:
-        logger.error(f"Ошибка выгрузки отчета: {e}")
-        await query.edit_message_text(
-            "❌ Ошибка при выгрузке отчета",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]])
-        )
-
-@log_performance
-async def export_portfolio_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выгрузка отчета портфеля"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        user_id = query.from_user.id
-        
-        PortfolioManager.initialize_user_portfolio(user_id)
-        report_text = ReportGenerator.generate_portfolio_report(user_id)
-        
-        # Создаем файл в памяти
-        report_bytes = report_text.encode('utf-8')
-        report_file = io.BytesIO(report_bytes)
-        report_file.name = f"portfolio_report_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
-        
-        await query.message.reply_document(
-            document=report_file,
-            filename=report_file.name,
-            caption="💼 *Отчет по портфелю*\n\nФайл готов для сохранения!",
-            parse_mode='Markdown'
-        )
-        
-        await query.edit_message_text(
-            "✅ *Отчет портфеля выгружен!*\n\nФайл отправлен в чат.",
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💼 Портфель", callback_data="portfolio")],
-                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-            ])
-        )
-        
-    except Exception as e:
-        logger.error(f"Ошибка выгрузки отчета портфеля: {e}")
-        await query.edit_message_text(
-            "❌ Ошибка при выгрузке отчета портфеля",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="portfolio")]])
-        )
-
-# АКТИВИРОВАННЫЕ ФУНКЦИИ - ДОБАВЛЕНИЕ СДЕЛКИ
 @log_performance
 async def portfolio_add_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало добавления сделки"""
     try:
         query = update.callback_query
         await query.answer()
+        
+        # Проверяем лимит сделок
+        user_id = query.from_user.id
+        PortfolioManager.initialize_user_portfolio(user_id)
+        
+        if len(user_data[user_id]['portfolio']['trades']) >= 10:
+            await query.edit_message_text(
+                "❌ *Достигнут лимит в 10 сделок!*\n\n"
+                "Удалите старые сделки чтобы добавить новые.",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📈 Обзор сделок", callback_data="portfolio_trades")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data="portfolio")]
+                ])
+            )
+            return ConversationHandler.END
         
         await query.edit_message_text(
             "➕ *ДОБАВЛЕНИЕ СДЕЛКИ*\n\n"
@@ -2084,7 +1761,6 @@ async def add_trade_instrument(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         instrument = update.message.text.upper().strip()
         
-        # Валидация инструмента
         is_valid, validated_instrument, message = InputValidator.validate_instrument(instrument)
         
         if not is_valid:
@@ -2139,7 +1815,6 @@ async def add_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     try:
         text = update.message.text
         
-        # Валидация цены
         is_valid, entry_price, message = InputValidator.validate_price(text)
         
         if not is_valid:
@@ -2168,7 +1843,6 @@ async def add_trade_exit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         text = update.message.text
         
-        # Валидация цены
         is_valid, exit_price, message = InputValidator.validate_price(text)
         
         if not is_valid:
@@ -2197,7 +1871,6 @@ async def add_trade_volume(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     try:
         text = update.message.text
         
-        # Валидация объема
         is_valid, volume, message = InputValidator.validate_number(text, 0.01, 100)
         
         if not is_valid:
@@ -2227,7 +1900,6 @@ async def add_trade_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     try:
         text = update.message.text
         
-        # Валидация прибыли
         is_valid, profit, message = InputValidator.validate_number(text, -1000000, 1000000)
         
         if not is_valid:
@@ -2281,123 +1953,207 @@ async def add_trade_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return ConversationHandler.END
 
-# ОБНОВЛЕННОЕ ГЛАВНОЕ МЕНЮ
 @log_performance
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Главное меню v4.0"""
+async def save_trade_from_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохранение сделки из профессионального расчета"""
     try:
-        logger.info(f"Команда /start от пользователя {update.effective_user.id}")
+        query = update.callback_query
+        await query.answer()
+        user_id = query.from_user.id
         
-        # Очистка предыдущих состояний для надежности
-        if context.user_data:
-            context.user_data.clear()
+        calculation_data = context.user_data.get('calculation_data', {})
+        if not calculation_data:
+            await query.edit_message_text(
+                "❌ Нет данных о последнем расчете для сохранения сделки.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+            )
+            return
         
-        user = update.message.from_user if update.message else update.callback_query.from_user
-        user_name = user.first_name or "Трейдер"
+        # Проверяем лимит сделок
+        if len(user_data[user_id]['portfolio']['trades']) >= 10:
+            await query.edit_message_text(
+                "❌ *Достигнут лимит в 10 сделок!*\n\n"
+                "Удалите старые сделки чтобы добавить новые.",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📈 Обзор сделок", callback_data="portfolio_trades")],
+                    [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+                ])
+            )
+            return
         
-        welcome_text = f"""
-👋 *Привет, {user_name}!*
+        if calculation_data['is_profitable']:
+            profit = calculation_data['potential_profit']
+        else:
+            profit = -calculation_data['potential_loss']
+        
+        trade_data = {
+            'instrument': calculation_data['instrument'],
+            'direction': calculation_data['direction'],
+            'entry_price': calculation_data['entry_price'],
+            'exit_price': calculation_data['take_profit'],
+            'stop_loss': calculation_data['stop_loss'],
+            'volume': calculation_data['position_size'],
+            'profit': profit,
+            'status': 'closed',
+            'calculated': True
+        }
+        
+        trade_id = PortfolioManager.add_trade(user_id, trade_data)
+        
+        profit_text = "прибылью" if profit > 0 else "убытком"
+        
+        await query.edit_message_text(
+            f"✅ *Сделка #{trade_id} успешно сохранена в портфель!*\n\n"
+            f"📊 *Детали сделки:*\n"
+            f"• 💰 Инструмент: {trade_data['instrument']}\n"
+            f"• 📈 Направление: {trade_data['direction']}\n"
+            f"• 💎 Вход: {trade_data['entry_price']}\n"
+            f"• 🎯 Выход: {trade_data['exit_price']}\n"
+            f"• 🛑 Стоп-лосс: {trade_data['stop_loss']}\n"
+            f"• 📦 Объем: {trade_data['volume']:.2f} лотов\n"
+            f"• 💵 Результат: ${profit:.2f}\n\n"
+            f"Сделка добавлена в ваш торговый портфель с {profit_text}.",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💼 Портфель", callback_data="portfolio")],
+                [InlineKeyboardButton("📊 Новый расчет", callback_data="pro_calculation")],
+                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+            ])
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении сделки из про расчета: {e}")
+        await query.edit_message_text(
+            "❌ Ошибка при сохранении сделки в портфель.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+        )
 
-🎯 PRO Калькулятор Управления Рисками v4.0
+@log_performance
+async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Раздел аналитики"""
+    try:
+        if update.message:
+            user_id = update.message.from_user.id
+        else:
+            user_id = update.callback_query.from_user.id
+            await update.callback_query.answer()
+        
+        PortfolioManager.initialize_user_portfolio(user_id)
+        portfolio = user_data[user_id]['portfolio']
+        trades = portfolio.get('trades', [])
+        performance = portfolio['performance']
+        
+        analytics_text = f"""
+🔮 *PRO АНАЛИТИКА И СТАТИСТИКА v4.0*
 
-⚡ *НОВЫЕ ВОЗМОЖНОСТИ:*
-• ✅ Многопозиционный расчет (до 10 сделок)
-• ✅ Анализ корреляций между активами  
-• ✅ Учет волатильности инструментов
-• ✅ Портфельные стратегии и рекомендации
-• ✅ Статистика за 5 лет по основным парам
-• ✅ Умные рекомендации для PRO трейдеров
+📊 *ВАША ТОРГОВАЯ ЭФФЕКТИВНОСТЬ:*
+• 💰 Баланс: ${portfolio['current_balance']:,.2f}
+• 📈 Всего сделок: {performance['total_trades']}
+• 🎯 Win Rate: {performance['win_rate']:.1f}%
+• ⚖️ Profit Factor: {performance['profit_factor']:.2f}
+• 📉 Макс. просадка: {performance['max_drawdown']:.1f}%
 
-*Выберите опцию:*
 """
         
-        user_id = user.id
-        PortfolioManager.initialize_user_portfolio(user_id)
+        if trades:
+            corr_analysis = PortfolioAnalyzer.analyze_correlations(trades)
+            vol_analysis = PortfolioAnalyzer.analyze_volatility(trades)
+            metrics = PortfolioAnalyzer.calculate_portfolio_metrics(trades)
+            
+            analytics_text += "🔗 *АНАЛИЗ КОРРЕЛЯЦИЙ ПОРТФЕЛЯ:*\n"
+            for i, analysis in enumerate(corr_analysis[:3], 1):
+                analytics_text += f"{i}. {analysis}\n"
+            
+            analytics_text += "\n⚡ *АНАЛИЗ ВОЛАТИЛЬНОСТИ:*\n"
+            for i, analysis in enumerate(vol_analysis[:2], 1):
+                analytics_text += f"{i}. {analysis}\n"
+            
+            if metrics:
+                analytics_text += f"\n📊 *МЕТРИКИ ПОРТФЕЛЯ:*\n"
+                analytics_text += f"• Общий риск: {metrics['total_risk']:.1f}%\n"
+                analytics_text += f"• Диверсификация: {metrics['diversity_score']:.0%}\n"
+                analytics_text += f"• Баланс направлений: {metrics['direction_balance']:.0%}\n"
+            
+            analytics_text += "\n🎯 *PRO СТРАТЕГИИ ДЛЯ ВАШЕГО ПОРТФЕЛЯ:*\n"
+            strategies = PortfolioAnalyzer.generate_portfolio_strategies(trades)
+            for strategy in strategies[:6]:
+                analytics_text += f"{strategy}\n"
+                
+        else:
+            analytics_text += """
+💡 *ДЛЯ ПОЛУЧЕНИЯ ДЕТАЛЬНОЙ АНАЛИТИКИ:*
+• Начните с профессионального расчета одной сделки
+• Добавьте несколько сделок в портфель для анализа
+• Система учитывает корреляции, волатильность и риски
+"""
+        
+        analytics_text += """
+
+🚀 *БУДУЩИЕ ВОЗМОЖНОСТИ:*
+• 🤖 AI-ассистент для прогноза движения цен
+• 📱 Мобильная версия PRO трейдера
+• 🔄 Автоматическая ребалансировка портфеля
+
+*PRO v4.0 | Умная аналитика • Корреляции • Волатильность* 🚀
+"""
         
         keyboard = [
             [InlineKeyboardButton("📊 Профессиональный расчет", callback_data="pro_calculation")],
             [InlineKeyboardButton("💼 Мой портфель", callback_data="portfolio")],
-            [InlineKeyboardButton("🔮 Расширенная аналитика", callback_data="analytics")],
-            [InlineKeyboardButton("📚 PRO Инструкции", callback_data="pro_info")]
+            [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
         ]
         
         if update.message:
             await update.message.reply_text(
-                welcome_text, 
+                analytics_text,
                 parse_mode='Markdown',
+                disable_web_page_preview=True,
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         else:
             await update.callback_query.edit_message_text(
-                welcome_text,
+                analytics_text,
                 parse_mode='Markdown',
+                disable_web_page_preview=True,
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
-        return MAIN_MENU
+        return ANALYTICS_MENU
     except Exception as e:
-        logger.error(f"Критическая ошибка в start: {e}")
-        if update.message:
-            await update.message.reply_text(
-                "🔄 Произошла ошибка. Попробуйте еще раз или используйте /start",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Перезапустить", callback_data="main_menu")]
-                ])
-            )
-        return MAIN_MENU
+        logger.error(f"Ошибка в analytics_command: {e}")
+        await handle_error(update, context, e)
 
-# ОБНОВЛЕННАЯ ИНСТРУКЦИЯ
 @log_performance
 async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """PRO Инструкции v4.0"""
+    """PRO Инструкции"""
     try:
         info_text = """
 📚 *PRO ИНСТРУКЦИИ v4.0*
 
-🎯 *ДЛЯ ПРОФЕССИОНАЛЬНЫХ ТРЕЙДЕРОВ-АНАЛИТИКОВ:*
+🎯 *ДЛЯ ПРОФЕССИОНАЛЬНЫХ ТРЕЙДЕРОВ:*
 
-💡 *МНОГОПОЗИЦИОННЫЙ АНАЛИЗ:*
-• Рассчитывайте риски для портфеля из нескольких сделок (до 10)
-• Анализируйте корреляции между активами
-• Учитывайте волатильность каждого инструмента
-• Получайте умные рекомендации для портфеля
+💡 *ОСНОВНЫЕ ВОЗМОЖНОСТИ:*
+• Расчет рисков для одной сделки с детальным анализом
+• Портфель до 10 сделок с отслеживанием баланса
+• Анализ корреляций между активами
+• Учет волатильности инструментов
+• Профессиональные рекомендации
 
-🔗 *КОРРЕЛЯЦИОННЫЙ АНАЛИЗ:*
-• Автоматическое определение связанных активов
-• Предупреждения о дублировании рисков
-• Рекомендации по хеджированию позиций
-• Учет разнонаправленных сделок
+📊 *КАК РАБОТАТЬ С ПОРТФЕЛЕМ:*
+1. Установите начальный баланс через "Внести депозит"
+2. Добавляйте сделки (максимум 10)
+3. Анализируйте эффективность в разделе "Аналитика"
+4. Используйте рекомендации для улучшения стратегии
 
-⚡ *УЧЕТ ВОЛАТИЛЬНОСТИ:*
-• Статистика за 5 лет по основным инструментам
-• Рекомендации по размерам стоп-лоссов
-• Адаптация рисков под волатильность рынка
-• Исторические данные по движениям цен
+⚡ *ВАЖНЫЕ ФИЧИ:*
+• Автоматический расчет всех метрик
+• Умные рекомендации на основе вашей статистики
+• Ограничение в 10 сделок для фокуса на качестве
+• Поддержка всех основных типов инструментов
 
-📊 *ДВЕ МОДЕЛИ РАБОТЫ:*
-1. *Одна сделка* - классический расчет с детальным анализом
-2. *Несколько сделок* - портфельный анализ с учетом корреляций
+👨‍💻 *Разработчик для профессионалов*
 
-💼 *ПОРТФЕЛЬ ДЛЯ АНАЛИТИКИ:*
-• Раздел "Мой портфель" предназначен для анализа нескольких сделок
-• Автоматический расчет общих рисков
-• Умные рекомендации по управлению портфелем
-• Учет взаимного влияния позиций
-
-🔮 *РАСШИРЕННАЯ АНАЛИТИКА:*
-• Профессиональные метрики эффективности
-• Стратегии для конкретного портфеля
-• Анализ рыночных условий
-• Прогнозные сценарии на основе исторических данных
-
-🚀 *ВАЖНО ДЛЯ PRO ТРЕЙДЕРОВ:*
-• Система учитывает 78% факторов успешного трейдинга
-• Корреляционный анализ снижает риски на 40%
-• Учет волатильности повышает точность на 35%
-• Портфельный подход увеличивает стабильность
-
-👨‍💻 *Разработчик для профессионалов:* @fxfeelgood
-
-*PRO v4.0 | Мультипозиция • Корреляции • Аналитика* 🚀
+*PRO v4.0 | Стабильность • Простота • Эффективность* 🚀
 """
         if update.message:
             await update.message.reply_text(
@@ -2417,7 +2173,117 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в pro_info_command: {e}")
         await handle_error(update, context, e)
 
-# ДОПОЛНИТЕЛЬНЫЕ НЕОБХОДИМЫЕ ФУНКЦИИ
+@log_performance
+async def export_calculation_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выгрузка отчета расчета"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user_data_context = context.user_data
+        calculation = user_data_context.get('last_calculation', {})
+        
+        if not calculation:
+            await query.edit_message_text(
+                "❌ Нет данных для выгрузки",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]])
+            )
+            return
+        
+        report_text = ReportGenerator.generate_calculation_report(calculation, user_data_context)
+        
+        report_bytes = report_text.encode('utf-8')
+        report_file = io.BytesIO(report_bytes)
+        report_file.name = f"calculation_report_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
+        
+        await query.message.reply_document(
+            document=report_file,
+            filename=report_file.name,
+            caption="📊 *Отчет расчета позиции*\n\nФайл готов для сохранения!",
+            parse_mode='Markdown'
+        )
+        
+        await query.edit_message_text(
+            "✅ *Отчет успешно выгружен!*\n\nФайл отправлен в чат.",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📊 Новый расчет", callback_data="pro_calculation")],
+                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+            ])
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка выгрузки отчета: {e}")
+        await query.edit_message_text(
+            "❌ Ошибка при выгрузке отчета",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]])
+        )
+
+@log_performance
+async def export_portfolio_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выгрузка отчета портфеля"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        user_id = query.from_user.id
+        
+        PortfolioManager.initialize_user_portfolio(user_id)
+        report_text = ReportGenerator.generate_portfolio_report(user_id)
+        
+        report_bytes = report_text.encode('utf-8')
+        report_file = io.BytesIO(report_bytes)
+        report_file.name = f"portfolio_report_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
+        
+        await query.message.reply_document(
+            document=report_file,
+            filename=report_file.name,
+            caption="💼 *Отчет по портфелю*\n\nФайл готов для сохранения!",
+            parse_mode='Markdown'
+        )
+        
+        await query.edit_message_text(
+            "✅ *Отчет портфеля выгружен!*\n\nФайл отправлен в чат.",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💼 Портфель", callback_data="portfolio")],
+                [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+            ])
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка выгрузки отчета портфеля: {e}")
+        await query.edit_message_text(
+            "❌ Ошибка при выгрузке отчета портфеля",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="portfolio")]])
+        )
+
+@log_performance
+async def handle_single_or_multi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка выбора типа расчета"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        choice = query.data
+        
+        if choice == "single_trade":
+            keyboard = []
+            for key, value in INSTRUMENT_TYPES.items():
+                keyboard.append([InlineKeyboardButton(value, callback_data=f"pro_type_{key}")])
+            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="pro_calculation")])
+            
+            await query.edit_message_text(
+                "📊 *ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ - ОДНА СДЕЛКА*\n\n"
+                "🎯 Выберите тип инструмента:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return INSTRUMENT_TYPE
+            
+    except Exception as e:
+        logger.error(f"Ошибка в handle_single_or_multi: {e}")
+        await handle_error(update, context, e)
+
 @log_performance
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отмена операции"""
@@ -2432,7 +2298,6 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка неизвестных команд"""
     logger.warning(f"Неизвестная команда: {update.message.text}")
     
-    # Если это команда /start, перенаправляем на старт
     if update.message.text == '/start':
         return await start(update, context)
     
@@ -2446,10 +2311,9 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
     )
 
-# НОВАЯ ФУНКЦИЯ: Обработка ошибок
 @log_performance
 async def handle_error(update: Update, context: ContextTypes.DEFAULT_TYPE, error: Exception = None):
-    """Централизованная обработка ошибок"""
+    """Обработка ошибок"""
     try:
         error_msg = "❌ Произошла непредвиденная ошибка. Пожалуйста, попробуйте еще раз."
         
@@ -2466,10 +2330,9 @@ async def handle_error(update: Update, context: ContextTypes.DEFAULT_TYPE, error
     except Exception as e:
         logger.error(f"Ошибка в обработчике ошибок: {e}")
 
-# ОБНОВЛЕННЫЙ ОБРАБОТЧИК ГЛАВНОГО МЕНЮ
 @log_performance
 async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка выбора в главном меню v4.0"""
+    """Обработка главного меню"""
     try:
         query = update.callback_query
         if not query:
@@ -2517,9 +2380,6 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         elif choice == "export_portfolio":
             await export_portfolio_report(update, context)
             return PORTFOLIO_MENU
-        elif choice == "portfolio_correlation":
-            await portfolio_correlation_analysis(update, context)
-            return PORTFOLIO_MENU
         
         # Выгрузка отчетов
         elif choice == "export_calculation":
@@ -2534,8 +2394,6 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         # Выбор типа расчета
         elif choice == "single_trade":
             return await handle_single_or_multi(update, context)
-        elif choice == "multi_trade":
-            return await handle_single_or_multi(update, context)
         
         return MAIN_MENU
         
@@ -2544,7 +2402,7 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await handle_error(update, context, e)
         return await start(update, context)
 
-# ФУНКЦИЯ ПРОВЕРКИ ВСЕХ ОБРАБОТЧИКОВ
+# Функция проверки обработчиков
 def validate_all_handlers():
     """Проверка существования всех необходимых обработчиков"""
     required_handlers = [
@@ -2556,8 +2414,7 @@ def validate_all_handlers():
         'add_trade_instrument', 'add_trade_direction', 'add_trade_entry',
         'add_trade_exit', 'add_trade_volume', 'add_trade_profit',
         'save_trade_from_pro_calculation', 'export_calculation_report',
-        'export_portfolio_report', 'portfolio_correlation_analysis',
-        'handle_single_or_multi', 'handle_error'
+        'export_portfolio_report', 'handle_single_or_multi', 'handle_error'
     ]
     
     missing_handlers = []
@@ -2572,7 +2429,7 @@ def validate_all_handlers():
         logger.info("✅ Все обработчики присутствуют")
         return True
 
-# ОСНОВНАЯ ФУНКЦИЯ С ИСПРАВЛЕННЫМ ЗАПУСКОМ
+# ОСНОВНАЯ ФУНКЦИЯ ЗАПУСКА
 def main():
     """Запуск бота v4.0"""
     token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -2586,6 +2443,12 @@ def main():
     if not validate_all_handlers():
         logger.error("❌ Не все обработчики определены! Бот не может быть запущен.")
         return
+    
+    # Запускаем keep-alive в отдельном потоке
+    if KEEP_ALIVE_URL:
+        keep_alive_thread = threading.Thread(target=run_keep_alive, daemon=True)
+        keep_alive_thread.start()
+        logger.info("✅ Keep-alive поток запущен")
     
     application = Application.builder().token(token).build()
 
@@ -2624,14 +2487,12 @@ def main():
         fallbacks=[CommandHandler('cancel', cancel), CommandHandler('start', start), CallbackQueryHandler(start, pattern='^main_menu$')]
     )
 
-    # ВАЖНО: Регистрируем CommandHandler('start', start) ПЕРВЫМ
+    # Регистрируем обработчики
     application.add_handler(CommandHandler('start', start))
-    
-    # Затем регистрируем ConversationHandler
     application.add_handler(pro_calc_conv)
     application.add_handler(add_trade_conv)
     
-    # Упрощенный обработчик состояний для главного меню и портфеля
+    # Упрощенный обработчик состояний
     conv_handler = ConversationHandler(
         entry_points=[],
         states={
