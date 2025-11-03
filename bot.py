@@ -32,11 +32,16 @@ def log_performance(func):
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         start_time = time.time()
-        result = await func(*args, **kwargs)
-        execution_time = time.time() - start_time
-        if execution_time > 1.0:
-            logger.warning(f"Медленная операция: {func.__name__} заняла {execution_time:.2f}с")
-        return result
+        try:
+            result = await func(*args, **kwargs)
+            execution_time = time.time() - start_time
+            if execution_time > 1.0:
+                logger.warning(f"Медленная операция: {func.__name__} заняла {execution_time:.2f}с")
+            return result
+        except Exception as e:
+            execution_time = time.time() - start_time
+            logger.error(f"Ошибка в {func.__name__}: {e} (время: {execution_time:.2f}с)")
+            raise
     return wrapper
 
 # Состояния диалога
@@ -148,7 +153,7 @@ class DataManager:
 # Глобальное хранилище данных пользователей
 user_data: Dict[int, Dict[str, Any]] = DataManager.load_data()
 
-# Упрощенный кэш
+# Упрощенный кэш с оптимизацией для Render
 class FastCache:
     def __init__(self, max_size=100, ttl=300):
         self.cache = {}
@@ -166,8 +171,10 @@ class FastCache:
     
     def set(self, key, value):
         if len(self.cache) >= self.max_size:
-            oldest_key = min(self.cache.keys(), key=lambda k: self.cache[k][1])
-            del self.cache[oldest_key]
+            # Удаляем самые старые записи
+            oldest_keys = sorted(self.cache.keys(), key=lambda k: self.cache[k][1])[:10]
+            for old_key in oldest_keys:
+                del self.cache[old_key]
         self.cache[key] = (value, time.time())
 
 fast_cache = FastCache()
@@ -248,7 +255,7 @@ class PortfolioAnalyzer:
             strategies.append("⚡ СТРАТЕГИЯ 3: Волатильностное управление")
             strategies.append("   • Уменьшайте размер позиций для волатильных активов")
             strategies.append("   • Используйте ATR для расчета стоп-лоссов")
-            strategies.append("   • Адаптируйте риск под текущую волатильность")
+            strategies.append("   • Адаптируйте риск под текучную волатильность")
         else:
             strategies.append("💡 Для сложных стратегий добавьте больше позиций (рекомендуется 3-5)")
         
@@ -899,6 +906,7 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return PORTFOLIO_MENU
     except Exception as e:
         logger.error(f"Ошибка в portfolio_command: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def portfolio_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -946,6 +954,7 @@ async def portfolio_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Ошибка в portfolio_trades: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def portfolio_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -990,6 +999,7 @@ async def portfolio_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Ошибка в portfolio_balance: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def portfolio_performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1039,6 +1049,7 @@ async def portfolio_performance(update: Update, context: ContextTypes.DEFAULT_TY
         )
     except Exception as e:
         logger.error(f"Ошибка в portfolio_performance: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def portfolio_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1103,6 +1114,7 @@ async def portfolio_deposit_menu(update: Update, context: ContextTypes.DEFAULT_T
         return DEPOSIT_AMOUNT
     except Exception as e:
         logger.error(f"Ошибка в portfolio_deposit_menu: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def portfolio_withdraw_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1126,6 +1138,7 @@ async def portfolio_withdraw_menu(update: Update, context: ContextTypes.DEFAULT_
         return WITHDRAW_AMOUNT
     except Exception as e:
         logger.error(f"Ошибка в portfolio_withdraw_menu: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def handle_deposit_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1238,6 +1251,7 @@ async def start_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TY
         return SINGLE_OR_MULTI
     except Exception as e:
         logger.error(f"Ошибка в start_pro_calculation: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def handle_single_or_multi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1300,6 +1314,7 @@ async def handle_single_or_multi(update: Update, context: ContextTypes.DEFAULT_T
             
     except Exception as e:
         logger.error(f"Ошибка в handle_single_or_multi: {e}")
+        await handle_error(update, context, e)
 
 # НЕОБХОДИМЫЕ ОБРАБОТЧИКИ ДЛЯ ПРОФЕССИОНАЛЬНОГО РАСЧЕТА
 @log_performance
@@ -1330,6 +1345,7 @@ async def pro_select_instrument_type(update: Update, context: ContextTypes.DEFAU
         return CUSTOM_INSTRUMENT
     except Exception as e:
         logger.error(f"Ошибка в pro_select_instrument_type: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def pro_select_instrument(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1364,6 +1380,7 @@ async def pro_select_instrument(update: Update, context: ContextTypes.DEFAULT_TY
             return DIRECTION
     except Exception as e:
         logger.error(f"Ошибка в pro_select_instrument: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def pro_handle_custom_instrument(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1400,6 +1417,7 @@ async def pro_handle_custom_instrument(update: Update, context: ContextTypes.DEF
         
     except Exception as e:
         logger.error(f"Ошибка в pro_handle_custom_instrument: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def pro_select_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1430,6 +1448,7 @@ async def pro_select_direction(update: Update, context: ContextTypes.DEFAULT_TYP
         return RISK_PERCENT
     except Exception as e:
         logger.error(f"Ошибка в pro_select_direction: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def pro_select_risk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1449,6 +1468,7 @@ async def pro_select_risk(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return DEPOSIT
     except Exception as e:
         logger.error(f"Ошибка в pro_select_risk: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def pro_handle_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1488,6 +1508,7 @@ async def pro_handle_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
     except Exception as e:
         logger.error(f"Ошибка в pro_handle_deposit: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def pro_select_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1507,6 +1528,7 @@ async def pro_select_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ENTRY
     except Exception as e:
         logger.error(f"Ошибка в pro_select_leverage: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def pro_handle_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1538,6 +1560,7 @@ async def pro_handle_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
     except Exception as e:
         logger.error(f"Ошибка в pro_handle_entry: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def pro_handle_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1566,6 +1589,7 @@ async def pro_handle_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYP
         
     except Exception as e:
         logger.error(f"Ошибка в pro_handle_stop_loss: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def pro_handle_take_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1590,6 +1614,7 @@ async def pro_handle_take_profit(update: Update, context: ContextTypes.DEFAULT_T
         
     except Exception as e:
         logger.error(f"Ошибка в pro_handle_take_profit: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def pro_calculate_and_show_results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1774,6 +1799,7 @@ async def portfolio_correlation_analysis(update: Update, context: ContextTypes.D
         
     except Exception as e:
         logger.error(f"Ошибка в portfolio_correlation_analysis: {e}")
+        await handle_error(update, context, e)
 
 # УЛУЧШЕННАЯ ФУНКЦИЯ - АНАЛИТИКА С УЧЕТОМ КОРРЕЛЯЦИЙ
 @log_performance
@@ -1842,7 +1868,7 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 """
         
         analytics_text += """
-        
+
 🚀 *БУДУЩИЕ ВОЗМОЖНОСТИ:*
 • 🤖 AI-ассистент для прогноза движения цен
 • 📱 Мобильная версия PRO трейдера
@@ -1877,6 +1903,7 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return ANALYTICS_MENU
     except Exception as e:
         logger.error(f"Ошибка в analytics_command: {e}")
+        await handle_error(update, context, e)
 
 # НОВАЯ ФУНКЦИЯ: Сохранение сделки из профессионального расчета
 @log_performance
@@ -2049,6 +2076,7 @@ async def portfolio_add_trade_start(update: Update, context: ContextTypes.DEFAUL
         return ADD_TRADE_INSTRUMENT
     except Exception as e:
         logger.error(f"Ошибка в portfolio_add_trade_start: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def add_trade_instrument(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2083,6 +2111,7 @@ async def add_trade_instrument(update: Update, context: ContextTypes.DEFAULT_TYP
         
     except Exception as e:
         logger.error(f"Ошибка в add_trade_instrument: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def add_trade_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2102,6 +2131,7 @@ async def add_trade_direction(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ADD_TRADE_ENTRY
     except Exception as e:
         logger.error(f"Ошибка в add_trade_direction: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def add_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2130,6 +2160,7 @@ async def add_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
     except Exception as e:
         logger.error(f"Ошибка в add_trade_entry: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def add_trade_exit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2158,6 +2189,7 @@ async def add_trade_exit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
     except Exception as e:
         logger.error(f"Ошибка в add_trade_exit: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def add_trade_volume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2187,6 +2219,7 @@ async def add_trade_volume(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
     except Exception as e:
         logger.error(f"Ошибка в add_trade_volume: {e}")
+        await handle_error(update, context, e)
 
 @log_performance
 async def add_trade_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2382,6 +2415,7 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     except Exception as e:
         logger.error(f"Ошибка в pro_info_command: {e}")
+        await handle_error(update, context, e)
 
 # ДОПОЛНИТЕЛЬНЫЕ НЕОБХОДИМЫЕ ФУНКЦИИ
 @log_performance
@@ -2411,6 +2445,26 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🚀 Главное меню", callback_data="main_menu")]
         ])
     )
+
+# НОВАЯ ФУНКЦИЯ: Обработка ошибок
+@log_performance
+async def handle_error(update: Update, context: ContextTypes.DEFAULT_TYPE, error: Exception = None):
+    """Централизованная обработка ошибок"""
+    try:
+        error_msg = "❌ Произошла непредвиденная ошибка. Пожалуйста, попробуйте еще раз."
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                error_msg,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+            )
+        elif update.message:
+            await update.message.reply_text(
+                error_msg,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]])
+            )
+    except Exception as e:
+        logger.error(f"Ошибка в обработчике ошибок: {e}")
 
 # ОБНОВЛЕННЫЙ ОБРАБОТЧИК ГЛАВНОГО МЕНЮ
 @log_performance
@@ -2487,6 +2541,7 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
     except Exception as e:
         logger.error(f"Ошибка в handle_main_menu: {e}")
+        await handle_error(update, context, e)
         return await start(update, context)
 
 # ФУНКЦИЯ ПРОВЕРКИ ВСЕХ ОБРАБОТЧИКОВ
@@ -2502,7 +2557,7 @@ def validate_all_handlers():
         'add_trade_exit', 'add_trade_volume', 'add_trade_profit',
         'save_trade_from_pro_calculation', 'export_calculation_report',
         'export_portfolio_report', 'portfolio_correlation_analysis',
-        'handle_single_or_multi'
+        'handle_single_or_multi', 'handle_error'
     ]
     
     missing_handlers = []
@@ -2576,7 +2631,7 @@ def main():
     application.add_handler(pro_calc_conv)
     application.add_handler(add_trade_conv)
     
-    # Упрощенный обработчик диалога
+    # Упрощенный обработчик состояний для главного меню и портфеля
     conv_handler = ConversationHandler(
         entry_points=[],
         states={
@@ -2586,45 +2641,25 @@ def main():
             DEPOSIT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_deposit_amount)],
             WITHDRAW_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_withdraw_amount)],
         },
-        fallbacks=[CommandHandler('cancel', cancel), CommandHandler('start', start)]
+        fallbacks=[CommandHandler('start', start), CommandHandler('cancel', cancel)],
+        allow_reentry=True
     )
-
     application.add_handler(conv_handler)
-    application.add_handler(CommandHandler('info', pro_info_command))
-    application.add_handler(CommandHandler('help', pro_info_command))
+    
+    # Обработчики команд
     application.add_handler(CommandHandler('portfolio', portfolio_command))
     application.add_handler(CommandHandler('analytics', analytics_command))
-    application.add_handler(CommandHandler('cancel', cancel))
-
-    # Обработчик для неизвестных команд - РЕГИСТРИРУЕМ ПОСЛЕДНИМ
+    application.add_handler(CommandHandler('info', pro_info_command))
+    
+    # Обработчик неизвестных команд
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     
-    # Обработчик главного меню (расширенный для новых функций)
-    application.add_handler(CallbackQueryHandler(handle_main_menu, pattern="^(main_menu|portfolio|pro_info|analytics|portfolio_trades|portfolio_balance|portfolio_performance|portfolio_report|portfolio_deposit|portfolio_withdraw|portfolio_add_trade|export_calculation|export_portfolio|save_trade_from_pro|single_trade|multi_trade|portfolio_correlation)$"))
+    # Обработчик неизвестных сообщений
+    application.add_handler(MessageHandler(filters.TEXT, unknown_command))
     
-    # Запускаем бота
-    port = int(os.environ.get('PORT', 10000))
-    webhook_url = os.getenv('RENDER_EXTERNAL_URL', '')
-    
-    logger.info(f"🌐 PRO v4.0 запускается на порту {port}")
-    
-    try:
-        if webhook_url and "render.com" in webhook_url:
-            logger.info(f"🔗 PRO Webhook URL: {webhook_url}/webhook")
-            application.run_webhook(
-                listen="0.0.0.0",
-                port=port,
-                url_path="/webhook",
-                webhook_url=webhook_url + "/webhook"
-            )
-        else:
-            logger.info("🔄 PRO запускается в режиме polling...")
-            application.run_polling()
-    except Exception as e:
-        logger.error(f"❌ Ошибка запуска PRO бота: {e}")
-        # Fallback на polling если вебхук не работает
-        logger.info("🔄 PRO запускается в режиме polling (fallback)...")
-        application.run_polling()
+    # Запуск бота
+    logger.info("✅ Бот успешно запущен и готов к работе!")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
