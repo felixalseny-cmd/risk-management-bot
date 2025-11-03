@@ -1028,9 +1028,6 @@ async def pro_select_instrument_type(update: Update, context: ContextTypes.DEFAU
         logger.error(f"Ошибка в pro_select_instrument_type: {e}")
         await handle_error(update, context, e)
 
-# Продолжение в следующем сообщении...<｜end▁of▁thinking｜>Продолжаю код с основными обработчиками:
-
-```python
 @log_performance
 async def pro_select_instrument(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Выбор инструмента"""
