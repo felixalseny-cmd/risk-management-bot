@@ -265,7 +265,7 @@ class PortfolioAnalyzer:
             
             strategies.append("")
             strategies.append("⚡ СТРАТЕГИЯ 3: Волатильностное управление")
-            strategies.append("   • Уменьшайте размер позиций для волатильных активов")
+            strategies.append("   • Уменьшайте размер позиций для волатильных активы")
             strategies.append("   • Используйте ATR для расчета стоп-лоссов")
             strategies.append("   • Адаптируйте риск под текущую волатильность")
         else:
@@ -911,8 +911,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             )
         return MAIN_MENU
 
-# ДОБАВЛЯЕМ НЕДОСТАЮЩИЕ ОБРАБОТЧИКИ:
-
 @log_performance
 async def start_pro_calculation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало профессионального расчета"""
@@ -1334,7 +1332,6 @@ async def pro_calculate_and_show_results(update: Update, context: ContextTypes.D
             )
         return ConversationHandler.END
 
-# Добавляем остальные необходимые обработчики
 @log_performance
 async def handle_single_or_multi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора типа расчета"""
@@ -1412,7 +1409,6 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         logger.error(f"Ошибка в portfolio_command: {e}")
         await handle_error(update, context, e)
 
-# Добавляем простые заглушки для остальных обработчиков чтобы код работал
 @log_performance
 async def portfolio_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать обзор сделок"""
@@ -1675,7 +1671,7 @@ async def health_check(request):
     """Health check endpoint для Render"""
     return web.Response(text="OK", status=200)
 
-async def handle_webhook(request):
+async def handle_webhook(request, application):
     """Обработчик вебхуков от Telegram"""
     try:
         data = await request.json()
@@ -1686,7 +1682,7 @@ async def handle_webhook(request):
         logger.error(f"Ошибка обработки вебхука: {e}")
         return web.Response(status=500)
 
-async def set_webhook():
+async def set_webhook(application):
     """Установка вебхука"""
     if not WEBHOOK_URL:
         logger.warning("WEBHOOK_URL не установлен, используем polling")
@@ -1704,14 +1700,14 @@ async def set_webhook():
         logger.error(f"Ошибка установки webhook: {e}")
         return False
 
-async def start_http_server():
+async def start_http_server(application):
     """Запуск HTTP сервера"""
     app = web.Application()
     
     # Регистрируем обработчики
     app.router.add_get('/', health_check)
     app.router.add_get('/health', health_check)
-    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+    app.router.add_post(WEBHOOK_PATH, lambda request: handle_webhook(request, application))
     
     runner = web.AppRunner(app)
     await runner.setup()
@@ -1722,20 +1718,36 @@ async def start_http_server():
     logger.info(f"HTTP сервер запущен на порту {PORT}")
     return runner
 
-# ========== ОСНОВНАЯ ФУНКЦИЯ ЗАПУСКА ==========
+async def start_webhook_mode(application):
+    """Запуск бота в режиме webhook"""
+    try:
+        # Устанавливаем вебхук
+        webhook_set = await set_webhook(application)
+        if not webhook_set:
+            logger.error("Не удалось установить вебхук")
+            return False
+        
+        # Запускаем HTTP сервер
+        runner = await start_http_server(application)
+        
+        logger.info("✅ Бот запущен в режиме Webhook!")
+        
+        # Бесконечный цикл для поддержания работы
+        while True:
+            await asyncio.sleep(3600)  # Спим 1 час
+            
+    except Exception as e:
+        logger.error(f"Ошибка в режиме webhook: {e}")
+        return False
 
-application = None
-
-def setup_application():
-    """Настройка приложения с обработчиками"""
-    global application
-    
+def create_application():
+    """Создание и настройка приложения"""
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     if not token:
         logger.error("❌ Токен бота не найден!")
         return None
 
-    logger.info("🚀 Инициализация ПРОФЕССИОНАЛЬНОГО калькулятора рисков v4.0...")
+    logger.info("🚀 Запуск ПРОФЕССИОНАЛЬНОГО калькулятора рисков v4.0...")
     
     # Создаем приложение
     application = Application.builder().token(token).build()
@@ -1808,47 +1820,22 @@ def setup_application():
     
     return application
 
-async def main_webhook():
-    """Основная функция для webhook режима"""
-    global application
-    
-    application = setup_application()
+def main():
+    """Основная функция запуска"""
+    # Создаем приложение
+    application = create_application()
     if not application:
         return
     
-    await application.initialize()
-    
-    # Пытаемся установить вебхук
-    webhook_set = await set_webhook()
-    
-    if webhook_set:
-        # Запускаем HTTP сервер для вебхуков
-        runner = await start_http_server()
-        logger.info("✅ Бот запущен в режиме Webhook!")
-        
-        # Бесконечный цикл для поддержания работы
-        while True:
-            await asyncio.sleep(3600)  # Спим 1 час
+    # Выбираем режим запуска
+    if WEBHOOK_URL:
+        # Запуск в режиме webhook
+        logger.info("🚀 Запуск в режиме Webhook...")
+        asyncio.run(start_webhook_mode(application))
     else:
-        logger.error("❌ Не удалось установить webhook, переключаемся на polling")
-        await application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-def main_polling():
-    """Основная функция для polling режима"""
-    global application
-    
-    application = setup_application()
-    if not application:
-        return
-    
-    logger.info("✅ Бот запущен в режиме Polling!")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+        # Запуск в режиме polling
+        logger.info("🚀 Запуск в режиме Polling...")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
-    # Разделяем логику запуска для избежания конфликта событийных циклов
-    if WEBHOOK_URL:
-        # Webhook режим - используем асинхронный запуск
-        asyncio.run(main_webhook())
-    else:
-        # Polling режим - используем синхронный запуск
-        main_polling()
+    main()
