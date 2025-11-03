@@ -1726,16 +1726,16 @@ async def start_http_server():
 
 application = None
 
-async def main():
-    """Асинхронный запуск бота v4.0"""
+def setup_application():
+    """Настройка приложения с обработчиками"""
     global application
     
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     if not token:
         logger.error("❌ Токен бота не найден!")
-        return
+        return None
 
-    logger.info("🚀 Запуск ПРОФЕССИОНАЛЬНОГО калькулятора рисков v4.0...")
+    logger.info("🚀 Инициализация ПРОФЕССИОНАЛЬНОГО калькулятора рисков v4.0...")
     
     # Создаем приложение
     application = Application.builder().token(token).build()
@@ -1806,7 +1806,16 @@ async def main():
     # Обработчик неизвестных сообщений
     application.add_handler(MessageHandler(filters.TEXT, unknown_command))
     
-    # Инициализируем приложение
+    return application
+
+async def main_webhook():
+    """Основная функция для webhook режима"""
+    global application
+    
+    application = setup_application()
+    if not application:
+        return
+    
     await application.initialize()
     
     # Пытаемся установить вебхук
@@ -1820,11 +1829,26 @@ async def main():
         # Бесконечный цикл для поддержания работы
         while True:
             await asyncio.sleep(3600)  # Спим 1 час
-            
     else:
-        # Запускаем в режиме polling
-        logger.info("✅ Бот запущен в режиме Polling!")
+        logger.error("❌ Не удалось установить webhook, переключаемся на polling")
         await application.run_polling(allowed_updates=Update.ALL_TYPES)
 
+def main_polling():
+    """Основная функция для polling режима"""
+    global application
+    
+    application = setup_application()
+    if not application:
+        return
+    
+    logger.info("✅ Бот запущен в режиме Polling!")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
 if __name__ == '__main__':
-    asyncio.run(main())
+    # Разделяем логику запуска для избежания конфликта событийных циклов
+    if WEBHOOK_URL:
+        # Webhook режим - используем асинхронный запуск
+        asyncio.run(main_webhook())
+    else:
+        # Polling режим - используем синхронный запуск
+        main_polling()
