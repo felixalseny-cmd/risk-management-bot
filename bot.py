@@ -1,4 +1,4 @@
-# bot.py — PRO Risk Calculator v3.0 | Полностью рабочий, готов к деплою
+# bot.py — PRO Risk Calculator v3.0 | Render + .env + orjson
 import os
 import logging
 import asyncio
@@ -19,16 +19,20 @@ from telegram.ext import (
     CallbackQueryHandler
 )
 
-# ---------------------------
-# Настройки и логирование
-# ---------------------------
+# --- Загрузка .env ---
+from dotenv import load_dotenv
+load_dotenv()  # <-- автоматически читает .env
+
+# --- Настройки ---
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN not found! Set it in environment variables.")
-PORT = int(os.getenv("PORT", 5000))
+    raise ValueError("TELEGRAM_BOT_TOKEN not found! Set it in .env or environment.")
+
+PORT = int(os.getenv("PORT", 10000))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 
+# --- Логи ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
