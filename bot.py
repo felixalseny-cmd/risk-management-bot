@@ -1,4 +1,4 @@
-# bot.py — PRO Risk Calculator v4.0 | COMPLETE FIX & ENHANCEMENT
+# bot.py — PRO Risk Calculator v2.0 | ENTERPRISE EDITION
 import os
 import logging
 import asyncio
@@ -53,7 +53,8 @@ class SingleTradeState(Enum):
     DIRECTION = 4
     ENTRY = 5
     STOP_LOSS = 6
-    TAKE_PROFIT = 7
+    RISK_LEVEL = 7  # НОВОЕ: Уровень риска
+    TAKE_PROFIT = 8
 
 class MultiTradeState(Enum):
     DEPOSIT = 1
@@ -62,8 +63,9 @@ class MultiTradeState(Enum):
     DIRECTION = 4
     ENTRY = 5
     STOP_LOSS = 6
-    TAKE_PROFIT = 7
-    ADD_MORE = 8
+    RISK_LEVEL = 7  # НОВОЕ: Уровень риска
+    TAKE_PROFIT = 8
+    ADD_MORE = 9
 
 # Инструменты и пресеты
 ASSET_PRESETS = [
@@ -72,7 +74,7 @@ ASSET_PRESETS = [
 ]
 
 LEVERAGES = ['1:10', '1:20', '1:50', '1:100', '1:200', '1:500']
-RISK_LEVELS = ['1%', '2%', '3%', '5%', '7%', '10%']
+RISK_LEVELS = ['2%', '5%', '7%', '10%', '15%', '20%', '25%']  # ОБНОВЛЕНО: Уровни риска
 
 # Волатильность активов
 VOLATILITY_DATA = {
@@ -80,6 +82,14 @@ VOLATILITY_DATA = {
     'GOOGL': 22.8, 'MSFT': 20.1, 'AMZN': 28.7, 'EURUSD': 8.5,
     'GBPUSD': 9.2, 'USDJPY': 7.8, 'XAUUSD': 14.5, 'XAGUSD': 25.3,
     'OIL': 35.2, 'NAS100': 18.5
+}
+
+# НОВОЕ: Размеры контрактов для расчета лотов
+CONTRACT_SIZES = {
+    'BTCUSDT': 1, 'ETHUSDT': 1, 'AAPL': 100, 'TSLA': 100, 
+    'GOOGL': 100, 'MSFT': 100, 'AMZN': 100, 'EURUSD': 100000, 
+    'GBPUSD': 100000, 'USDJPY': 100000, 'XAUUSD': 100, 
+    'XAGUSD': 5000, 'OIL': 1000, 'NAS100': 10
 }
 
 # ---------------------------
@@ -105,6 +115,45 @@ class DataManager:
                 json.dump(serializable, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error("Ошибка сохранения: %s", e)
+
+    # НОВОЕ: Временное хранилище для незавершенных сделок
+    @staticmethod
+    def save_temporary_progress(user_id: int, state_data: Dict, state_type: str):
+        """Сохранение временного прогресса"""
+        try:
+            temp_data = DataManager.load_temporary_data()
+            temp_data[str(user_id)] = {
+                'state_data': state_data,
+                'state_type': state_type,
+                'saved_at': datetime.now().isoformat()
+            }
+            with open("temp_progress.json", 'w', encoding='utf-8') as f:
+                json.dump(temp_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error("Ошибка сохранения прогресса: %s", e)
+
+    @staticmethod
+    def load_temporary_data() -> Dict[str, Any]:
+        """Загрузка временных данных"""
+        try:
+            if os.path.exists("temp_progress.json"):
+                with open("temp_progress.json", 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.error("Ошибка загрузки прогресса: %s", e)
+        return {}
+
+    @staticmethod
+    def clear_temporary_progress(user_id: int):
+        """Очистка временного прогресса"""
+        try:
+            temp_data = DataManager.load_temporary_data()
+            if str(user_id) in temp_data:
+                del temp_data[str(user_id)]
+                with open("temp_progress.json", 'w', encoding='utf-8') as f:
+                    json.dump(temp_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error("Ошибка очистки прогресса: %s", e)
 
 user_data = DataManager.load_data()
 
@@ -165,58 +214,83 @@ class PortfolioManager:
             DataManager.save_data(user_data)
 
 # ---------------------------
-# Risk Calculator
+# Risk Calculator - ПОЛНОСТЬЮ ОБНОВЛЕН
 # ---------------------------
 class RiskCalculator:
     @staticmethod
-    def calculate_position_metrics(trade: Dict, deposit: float, leverage: str) -> Dict:
-        """Расчет метрик для одной сделки"""
+    def calculate_margin_metrics(trade: Dict, deposit: float, leverage: str, risk_level: str) -> Dict:
+        """
+        ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ МАРЖИ И ЛОТОВ
+        """
         try:
             entry = trade['entry_price']
             stop_loss = trade['stop_loss']
             take_profit = trade['take_profit']
             direction = trade['direction']
+            asset = trade['asset']
             
-            # Расчет риска в пунктах
+            # Расчет дистанции стоп-лосса
             if direction.upper() == 'LONG':
-                risk_pips = entry - stop_loss
-                reward_pips = take_profit - entry
+                stop_distance = entry - stop_loss
+                profit_distance = take_profit - entry
             else:  # SHORT
-                risk_pips = stop_loss - entry
-                reward_pips = entry - take_profit
+                stop_distance = stop_loss - entry
+                profit_distance = entry - take_profit
             
-            # Процент риска
-            risk_percent = (abs(risk_pips) / entry) * 100
-            
-            # Размер позиции (упрощенный расчет)
-            lev_value = int(leverage.split(':')[1])
+            # Расчет суммы риска
+            risk_percent = float(risk_level.strip('%'))
             risk_amount = deposit * (risk_percent / 100)
-            position_size = min(risk_amount * lev_value / abs(risk_pips), deposit * lev_value / entry)
-            position_size = round(position_size, 2)
             
-            # Потенциальная прибыль/убыток
-            potential_loss = risk_amount
-            potential_profit = abs(reward_pips) * position_size
+            # Расчет объема в лотах
+            lev_value = int(leverage.split(':')[1])
+            contract_size = CONTRACT_SIZES.get(asset, 1)
+            
+            # Volume = (Risk Amount × Leverage) / (Stop Distance × Contract Size)
+            if stop_distance > 0:
+                volume_lots = (risk_amount * lev_value) / (stop_distance * contract_size)
+                volume_lots = round(volume_lots, 2)
+            else:
+                volume_lots = 0
+            
+            # Расчет требуемой маржи
+            # Required Margin = (Volume × Contract Size) / Leverage
+            required_margin = (volume_lots * contract_size) / lev_value
+            required_margin = round(required_margin, 2)
+            
+            # Свободная маржа и уровень маржи
+            free_margin = deposit - required_margin
+            free_margin = round(free_margin, 2)
+            
+            margin_level = (deposit / required_margin) * 100 if required_margin > 0 else 0
+            margin_level = round(margin_level, 1)
+            
+            # Расчет потенциальной прибыли
+            potential_profit = volume_lots * profit_distance * contract_size
+            potential_profit = round(potential_profit, 2)
             
             # Risk/Reward ratio
-            rr_ratio = potential_profit / potential_loss if potential_loss > 0 else 0
+            rr_ratio = potential_profit / risk_amount if risk_amount > 0 else 0
+            rr_ratio = round(rr_ratio, 2)
             
             return {
-                'position_size': position_size,
-                'risk_percent': risk_percent,
+                'volume_lots': volume_lots,
+                'required_margin': required_margin,
+                'free_margin': free_margin,
+                'margin_level': margin_level,
                 'risk_amount': risk_amount,
+                'risk_percent': risk_percent,
                 'potential_profit': potential_profit,
-                'potential_loss': potential_loss,
                 'rr_ratio': rr_ratio,
-                'risk_pips': abs(risk_pips),
-                'reward_pips': abs(reward_pips)
+                'stop_distance': stop_distance,
+                'profit_distance': profit_distance,
+                'contract_size': contract_size
             }
         except Exception as e:
-            logger.error("Ошибка расчета: %s", e)
+            logger.error("Ошибка расчета маржи: %s", e)
             return {}
 
 # ---------------------------
-# Portfolio Analyzer
+# Portfolio Analyzer - ОБНОВЛЕН
 # ---------------------------
 class PortfolioAnalyzer:
     @staticmethod
@@ -227,7 +301,7 @@ class PortfolioAnalyzer:
         
         total_risk = sum(t.get('metrics', {}).get('risk_amount', 0) for t in trades)
         total_profit = sum(t.get('metrics', {}).get('potential_profit', 0) for t in trades)
-        total_loss = sum(t.get('metrics', {}).get('potential_loss', 0) for t in trades)
+        total_margin = sum(t.get('metrics', {}).get('required_margin', 0) for t in trades)
         
         avg_rr = sum(t.get('metrics', {}).get('rr_ratio', 0) for t in trades) / len(trades)
         
@@ -243,11 +317,15 @@ class PortfolioAnalyzer:
         unique_assets = len(set(t['asset'] for t in trades))
         diversity_score = unique_assets / len(trades)
         
+        # Уровень маржи портфеля
+        portfolio_margin_level = (deposit / total_margin) * 100 if total_margin > 0 else 0
+        
         return {
             'total_risk_usd': total_risk,
             'total_risk_percent': (total_risk / deposit) * 100 if deposit > 0 else 0,
             'total_profit': total_profit,
-            'total_loss': total_loss,
+            'total_margin': total_margin,
+            'portfolio_margin_level': portfolio_margin_level,
             'avg_rr_ratio': avg_rr,
             'portfolio_volatility': portfolio_volatility,
             'long_positions': long_count,
@@ -267,6 +345,18 @@ class PortfolioAnalyzer:
             recommendations.append(
                 "⚠️ ВНИМАНИЕ: Общий риск портфеля превышает 5%. "
                 "Рекомендуется уменьшить объем позиций."
+            )
+        
+        # Проверка уровня маржи
+        if metrics.get('portfolio_margin_level', 0) < 100:
+            recommendations.append(
+                "🔴 КРИТИЧЕСКИЙ УРОВЕНЬ МАРЖИ! Немедленно пополните счет "
+                "или закрите часть позиций."
+            )
+        elif metrics.get('portfolio_margin_level', 0) < 200:
+            recommendations.append(
+                "🟡 НИЗКИЙ УРОВЕНЬ МАРЖИ: Рассмотрите пополнение счета "
+                "для безопасности позиций."
             )
         
         # Проверка Risk/Reward
@@ -333,7 +423,7 @@ class PortfolioAnalyzer:
         return correlations if correlations else ["✅ Корреляции в пределах нормы"]
 
 # ---------------------------
-# Handlers
+# Handlers - ОБНОВЛЕНЫ С КНОПКОЙ ГЛАВНОГО МЕНЮ
 # ---------------------------
 def performance_logger(func):
     @functools.wraps(func)
@@ -347,78 +437,106 @@ def performance_logger(func):
                 logger.warning("Slow handler: %s took %.2fs", func.__name__, duration)
     return wrapper
 
+# НОВОЕ: Универсальный обработчик главного меню
+async def main_menu_save_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, current_state: int = None):
+    """УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК СОХРАНЕНИЯ ПЕРЕД ВЫХОДОМ"""
+    query = update.callback_query
+    user_id = query.from_user.id if query else update.message.from_user.id
+    
+    # Сохраняем текущий прогресс
+    if context.user_data:
+        state_type = "single" if current_state in [s.value for s in SingleTradeState] else "multi"
+        DataManager.save_temporary_progress(user_id, context.user_data.copy(), state_type)
+    
+    # Очищаем временные данные
+    context.user_data.clear()
+    
+    # Возвращаем в главное меню
+    await start_command(update, context)
+    
+    return ConversationHandler.END
+
 @performance_logger
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
+    """Обработчик команды /start - ОБНОВЛЕН ДО v2.0"""
     user = update.effective_user
     user_id = user.id
     PortfolioManager.ensure_user(user_id)
     
+    # Проверяем есть ли сохраненный прогресс
+    temp_data = DataManager.load_temporary_data()
+    saved_progress = temp_data.get(str(user_id))
+    
     text = (
         f"👋 Привет, {user.first_name}!\n\n"
-        "🤖 **PRO Калькулятор Управления Рисками v4.0**\n\n"
+        "🤖 **PRO Калькулятор Управления Рисками v2.0**\n\n"
         "**МОИ ВОЗМОЖНОСТИ:**\n"
-        "• 📊 Профессиональный расчет позиций\n"
-        "• 🎯 Мультипозиционный анализ\n"
-        "• 📈 Портфельная аналитика\n"
-        "• 💡 Умные рекомендации\n\n"
-        "**Выберите раздел:**"
+        "• 📊 Профессиональный расчет позиций с маржой и лотами\n"
+        "• 🎯 Контроль уровней риска (2%-25%)\n"
+        "• 💼 Мультипозиционный анализ портфеля\n"
+        "• 💡 Умные рекомендации и аналитика\n\n"
     )
+    
+    if saved_progress:
+        text += "🔔 У вас есть сохраненный прогресс! Вы можете продолжить с того же места.\n\n"
+    
+    text += "**Выберите раздел:**"
     
     keyboard = [
         [InlineKeyboardButton("🎯 Профессиональные сделки", callback_data="pro_calculation")],
-        [InlineKeyboardButton("📊 Мой портфель", callback_data="portfolio")],
+        [InlineKeyboardButton("📊 Мой портфель", callback_data="portfolio")]
+    ]
+    
+    if saved_progress:
+        keyboard.append([InlineKeyboardButton("🔄 Продолжить расчет", callback_data="restore_progress")])
+    
+    keyboard.extend([
         [InlineKeyboardButton("📚 PRO Инструкции", callback_data="pro_info")],
         [InlineKeyboardButton("🚀 Будущие разработки", callback_data="future_features")]
-    ]
+    ])
     
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 @performance_logger
 async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ОБНОВЛЕННЫЕ PRO инструкции для опытных трейдеров"""
+    """ОБНОВЛЕННЫЕ PRO инструкции v2.0 - ПРАКТИЧЕСКИЙ ФОКУС"""
     text = (
-        "📚 **PRO ИНСТРУКЦИИ v4.0**\n\n"
+        "📚 **PRO ИНСТРУКЦИИ v2.0**\n\n"
         
-        "**🎯 ПРОДВИНУТОЕ УПРАВЛЕНИЕ РИСКАМИ**\n\n"
+        "**🎯 ПРАКТИЧЕСКОЕ УПРАВЛЕНИЕ РИСКАМИ**\n\n"
         
-        "**📊 КЛЮЧЕВЫЕ МЕТРИКИ ДЛЯ ПРОФЕССИОНАЛОВ:**\n\n"
+        "**📊 КЛЮЧЕВЫЕ ПРИНЦИПЫ ДЛЯ ПРОФЕССИОНАЛОВ:**\n\n"
         
-        "**1. КАЛЬКУЛЯЦИЯ ПОЗИЦИЙ С УЧЕТОМ ВОЛАТИЛЬНОСТИ**\n"
-        "• ATR-адоптированный размер позиции\n"
-        "• Учет корреляции между активами\n"
-        "• Динамический расчет стоп-лоссов\n"
-        "• Взвешивание позиций по волатильности\n\n"
+        "**1. УПРАВЛЕНИЕ РАЗМЕРОМ ПОЗИЦИИ**\n"
+        "• Всегда определяйте риск ДО входа в сделку\n"
+        "• Используйте фиксированный % от депозита (2-5%)\n"
+        "• Рассчитывайте объем позиции на основе стоп-лосса\n"
+        "• Учитывайте кредитное плечо при расчете маржи\n\n"
         
-        "**2. ПОРТФЕЛЬНАЯ ТЕОРИЯ В ТРЕЙДИНГЕ**\n"
-        "• Эффективная диверсификация по секторам\n"
-        "• Балансировка beta-коэффициентов\n"
-        "• Управление ковариационной матрицей\n"
-        "• Оптимизация Sharpe Ratio портфеля\n\n"
+        "**2. УРОВНИ РИСКА И ИХ ПРИМЕНЕНИЕ**\n"
+        "• 2% - Консервативный: Для начинающих и крупных капиталов\n"
+        "• 5% - Стандартный: Баланс роста и безопасности\n"
+        "• 10% - Агрессивный: Для опытных трейдеров\n"
+        "• 25% - Максимальный: Только для уверенных сделок\n\n"
         
-        "**3. РИСК-МЕНЕДЖМЕНТ ПРОФЕССИОНАЛЬНОГО УРОВНЯ**\n"
-        "• Kelly Criterion для оптимизации размера\n"
-        "• Maximum Drawdown контроль\n"
-        "• Value at Risk (VaR) расчеты\n"
-        "• Stress-testing сценарии\n\n"
+        "**3. РАСЧЕТ МАРЖИ И ЛОТОВ**\n"
+        "• Volume = (Risk Amount × Leverage) / (Stop Distance × Contract Size)\n"
+        "• Required Margin = (Volume × Contract Size) / Leverage\n"
+        "• Всегда следите за уровнем маржи (>200%)\n"
+        "• Оставляйте свободную маржу для маневра\n\n"
         
-        "**4. ПСИХОЛОГИЯ И ДИСЦИПЛИНА**\n"
-        "• Emotional Intelligence в трейдинге\n"
-        "• Протоколы принятия решений\n"
-        "• Управление когнитивными искажениями\n"
-        "• Журналирование и анализ ошибок\n\n"
+        "**4. ПОРТФЕЛЬНАЯ ДИВЕРСИФИКАЦИЯ**\n"
+        "• Распределяйте капитал между 3-5 активами\n"
+        "• Сочетайте разные классы активов\n"
+        "• Балансируйте LONG/SHORT позиции\n"
+        "• Учитывайте корреляции между инструментами\n\n"
         
-        "**💡 ПРОДВИНУТЫЕ СТРАТЕГИИ:**\n"
-        "• Хеджирование валютных рисков\n"
-        "• Опционные стратегии защиты\n"
-        "• Тактическое распределение активов\n"
-        "• Квантитативные модели оценки\n\n"
-        
-        "**📈 ФОРМУЛЫ И РАСЧЕТЫ:**\n"
-        "• Position Size = (Account Risk %) / (Stop Loss %)\n"
-        "• Risk/Reward = (Target Price - Entry) / (Entry - Stop Loss)\n"
-        "• Portfolio Volatility = √(wᵀ × Σ × w)\n"
-        "• Sharpe Ratio = (Return - Risk Free) / Volatility\n\n"
+        "**💡 ПРАКТИЧЕСКИЕ СОВЕТЫ:**\n"
+        "• Всегда используйте стоп-лосс\n"
+        "• Минимальное соотношение R/R = 1:1.5\n"
+        "• Ведение торгового журнала обязательно\n"
+        "• Регулярно анализируйте статистику\n"
+        "• Не увеличивайте риск после убытков\n\n"
         
         "Разработчик: @fxfeelgood"
     )
@@ -433,7 +551,7 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]))
 
 # ---------------------------
-# Single Trade Conversation Handler
+# Single Trade Conversation Handler - ОБНОВЛЕН С РИСК-УРОВНЕМ
 # ---------------------------
 async def single_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало одиночной сделки"""
@@ -441,13 +559,16 @@ async def single_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     
     text = (
-        "🎯 **ОДИНОЧНАЯ СДЕЛКА**\n\n"
-        "Я помогу вам рассчитать оптимальный размер позиции "
-        "с учетом управления рисками.\n\n"
+        "🎯 **ОДИНОЧНАЯ СДЕЛКА v2.0**\n\n"
+        "Профессиональный расчет с контролем риска и расчетом маржи.\n\n"
         "**Введите ваш депозит в USD:**"
     )
     
-    await query.edit_message_text(text)
+    keyboard = [
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+    ]
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     return SingleTradeState.DEPOSIT.value
 
 async def single_trade_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -465,6 +586,8 @@ async def single_trade_deposit(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = []
         for leverage in LEVERAGES:
             keyboard.append([InlineKeyboardButton(leverage, callback_data=f"lev_{leverage}")])
+        
+        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
         
         await update.message.reply_text(
             f"✅ Депозит: ${deposit:,.2f}\n\n"
@@ -492,7 +615,8 @@ async def single_trade_leverage(update: Update, context: ContextTypes.DEFAULT_TY
             [InlineKeyboardButton(asset, callback_data=f"asset_{asset}")] 
             for asset in ASSET_PRESETS[:7]
         ] + [
-            [InlineKeyboardButton("📝 Ввести вручную", callback_data="asset_manual")]
+            [InlineKeyboardButton("📝 Ввести вручную", callback_data="asset_manual")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
         ])
     )
     return SingleTradeState.ASSET.value
@@ -503,7 +627,12 @@ async def single_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     
     if query.data == "asset_manual":
-        await query.edit_message_text("✍️ Введите название актива (например: BTCUSDT):")
+        await query.edit_message_text(
+            "✍️ Введите название актива (например: BTCUSDT):",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
+        )
         return SingleTradeState.ASSET.value
     
     else:
@@ -515,7 +644,8 @@ async def single_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "**Выберите направление сделки:**",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📈 LONG", callback_data="dir_LONG")],
-                [InlineKeyboardButton("📉 SHORT", callback_data="dir_SHORT")]
+                [InlineKeyboardButton("📉 SHORT", callback_data="dir_SHORT")],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
             ])
         )
         return SingleTradeState.DIRECTION.value
@@ -536,7 +666,8 @@ async def single_trade_asset_manual(update: Update, context: ContextTypes.DEFAUL
         "**Выберите направление сделки:**",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📈 LONG", callback_data="dir_LONG")],
-            [InlineKeyboardButton("📉 SHORT", callback_data="dir_SHORT")]
+            [InlineKeyboardButton("📉 SHORT", callback_data="dir_SHORT")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
         ])
     )
     return SingleTradeState.DIRECTION.value
@@ -551,7 +682,10 @@ async def single_trade_direction(update: Update, context: ContextTypes.DEFAULT_T
     
     await query.edit_message_text(
         f"✅ Направление: {direction}\n\n"
-        "**Введите цену входа:**"
+        "**Введите цену входа:**",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+        ])
     )
     return SingleTradeState.ENTRY.value
 
@@ -569,7 +703,10 @@ async def single_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         await update.message.reply_text(
             f"✅ Цена входа: {entry_price}\n\n"
-            "**Введите уровень стоп-лосса:**"
+            "**Введите уровень стоп-лосса:**",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
         )
         return SingleTradeState.STOP_LOSS.value
         
@@ -600,18 +737,43 @@ async def single_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_T
         
         context.user_data['stop_loss'] = stop_loss
         
+        # НОВОЕ: Переход к выбору уровня риска
+        keyboard = []
+        for risk_level in RISK_LEVELS:
+            keyboard.append([InlineKeyboardButton(risk_level, callback_data=f"risk_{risk_level}")])
+        
+        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
+        
         await update.message.reply_text(
             f"✅ Стоп-лосс: {stop_loss}\n\n"
-            "**Введите уровень тейк-профита:**"
+            "**Выберите уровень риска:**",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        return SingleTradeState.TAKE_PROFIT.value
+        return SingleTradeState.RISK_LEVEL.value
         
     except ValueError:
         await update.message.reply_text("❌ Введите число (например: 48000)\nПопробуйте еще раз:")
         return SingleTradeState.STOP_LOSS.value
 
+async def single_trade_risk_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """НОВОЕ: Обработка выбора уровня риска"""
+    query = update.callback_query
+    await query.answer()
+    
+    risk_level = query.data.replace('risk_', '')
+    context.user_data['risk_level'] = risk_level
+    
+    await query.edit_message_text(
+        f"✅ Уровень риска: {risk_level}\n\n"
+        "**Введите уровень тейк-профита:**",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+        ])
+    )
+    return SingleTradeState.TAKE_PROFIT.value
+
 async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка тейк-профита и показ результатов одиночной сделки"""
+    """Обработка тейк-профита и показ результатов одиночной сделки - ОБНОВЛЕН ВЫВОД"""
     text = update.message.text.strip()
     
     try:
@@ -637,43 +799,53 @@ async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT
             'direction': direction,
             'entry_price': entry_price,
             'stop_loss': context.user_data['stop_loss'],
-            'take_profit': take_profit
+            'take_profit': take_profit,
+            'risk_level': context.user_data['risk_level']  # НОВОЕ: Сохраняем уровень риска
         }
         
-        # Расчет метрик
+        # Расчет метрик с новым калькулятором
         deposit = context.user_data['deposit']
         leverage = context.user_data['leverage']
-        metrics = RiskCalculator.calculate_position_metrics(trade_data, deposit, leverage)
+        risk_level = context.user_data['risk_level']
+        metrics = RiskCalculator.calculate_margin_metrics(trade_data, deposit, leverage, risk_level)
         
         # Сохраняем сделку
         user_id = update.message.from_user.id
         trade_data['metrics'] = metrics
         PortfolioManager.add_single_trade(user_id, trade_data)
         
-        # Формируем результат
+        # Очищаем временный прогресс
+        DataManager.clear_temporary_progress(user_id)
+        
+        # Формируем результат с ПРОФЕССИОНАЛЬНЫМ ВЫВОДОМ
         text = (
-            f"🎯 **РАСЧЕТ ОДИНОЧНОЙ СДЕЛКИ**\n\n"
+            f"🎯 **ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ СДЕЛКИ v2.0**\n\n"
             f"**📊 ПАРАМЕТРЫ СДЕЛКИ:**\n"
             f"• Актив: {trade_data['asset']}\n"
             f"• Направление: {trade_data['direction']}\n"
             f"• Вход: {trade_data['entry_price']}\n"
             f"• Стоп-лосс: {trade_data['stop_loss']}\n"
-            f"• Тейк-профит: {trade_data['take_profit']}\n\n"
+            f"• Тейк-профит: {trade_data['take_profit']}\n"
+            f"• Уровень риска: {trade_data['risk_level']}\n\n"
             
-            f"**💰 РАСЧЕТ РИСКОВ:**\n"
-            f"• Размер позиции: {metrics['position_size']:.2f}\n"
-            f"• Риск на сделку: ${metrics['risk_amount']:.2f} ({metrics['risk_percent']:.2f}%)\n"
+            f"**💰 ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ:**\n"
+            f"• Объем позиции: {metrics['volume_lots']:.2f} лотов\n"
+            f"• Требуемая маржа: ${metrics['required_margin']:.2f}\n"
+            f"• Свободная маржа: ${metrics['free_margin']:.2f}\n"
+            f"• Уровень маржи: {metrics['margin_level']:.1f}%\n"
+            f"• Сумма риска: ${metrics['risk_amount']:.2f} ({metrics['risk_percent']}%)\n"
             f"• Потенциальная прибыль: ${metrics['potential_profit']:.2f}\n"
-            f"• Потенциальный убыток: ${metrics['potential_loss']:.2f}\n"
             f"• Соотношение R/R: {metrics['rr_ratio']:.2f}\n\n"
             
             f"**💡 РЕКОМЕНДАЦИЯ:**\n"
         )
         
-        if metrics['risk_percent'] > 2:
-            text += "⚠️ Риск превышает 2%! Рекомендуется уменьшить размер позиции.\n\n"
+        if metrics['risk_percent'] > 10:
+            text += "🔴 ВЫСОКИЙ РИСК! Превышен порог 10%. Уменьшите объем позиции.\n\n"
+        elif metrics['margin_level'] < 100:
+            text += "🔴 КРИТИЧЕСКИЙ УРОВЕНЬ МАРЖИ! Пополните счет.\n\n"
         elif metrics['rr_ratio'] < 1:
-            text += "⚠️ Соотношение R/R меньше 1! Пересмотрите уровни TP/SL.\n\n"
+            text += "🟡 Соотношение R/R меньше 1! Пересмотрите уровни TP/SL.\n\n"
         else:
             text += "✅ Параметры сделки в пределах нормы.\n\n"
         
@@ -694,12 +866,14 @@ async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT
 
 async def single_trade_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отмена одиночной сделки"""
+    user_id = update.message.from_user.id
+    DataManager.clear_temporary_progress(user_id)
     context.user_data.clear()
     await update.message.reply_text("❌ Расчет отменен")
     return ConversationHandler.END
 
 # ---------------------------
-# Multi-trade Conversation Handler
+# Multi-trade Conversation Handler - ОБНОВЛЕН С РИСК-УРОВНЕМ
 # ---------------------------
 async def multi_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало мультипозиционного расчета"""
@@ -709,13 +883,16 @@ async def multi_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data['multi_trades'] = []
     
     text = (
-        "🎯 **МУЛЬТИПОЗИЦИОННЫЙ РАСЧЕТ**\n\n"
-        "Я помогу вам рассчитать оптимальные размеры позиций "
-        "для нескольких сделок с учетом общего риска.\n\n"
+        "🎯 **МУЛЬТИПОЗИЦИОННЫЙ РАСЧЕТ v2.0**\n\n"
+        "Профессиональный расчет нескольких сделок с контролем общего риска.\n\n"
         "**Введите общий депозит в USD:**"
     )
     
-    await query.edit_message_text(text)
+    keyboard = [
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+    ]
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     return MultiTradeState.DEPOSIT.value
 
 async def multi_trade_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -733,6 +910,8 @@ async def multi_trade_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE
         keyboard = []
         for leverage in LEVERAGES:
             keyboard.append([InlineKeyboardButton(leverage, callback_data=f"lev_{leverage}")])
+        
+        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
         
         await update.message.reply_text(
             f"✅ Депозит: ${deposit:,.2f}\n\n"
@@ -764,28 +943,19 @@ async def start_trade_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     text = f"**Сделка #{trade_count + 1}**\n\nВыберите актив из списка или введите свой:"
     
+    keyboard = [
+        [InlineKeyboardButton(asset, callback_data=f"asset_{asset}")] 
+        for asset in ASSET_PRESETS[:6]
+    ] + [
+        [InlineKeyboardButton("📝 Ввести вручную", callback_data="asset_manual")],
+        [InlineKeyboardButton("🚀 Завершить ввод", callback_data="multi_finish")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+    ]
+    
     if query:
-        await query.edit_message_text(
-            text,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(asset, callback_data=f"asset_{asset}")] 
-                for asset in ASSET_PRESETS[:6]
-            ] + [
-                [InlineKeyboardButton("📝 Ввести вручную", callback_data="asset_manual")],
-                [InlineKeyboardButton("🚀 Завершить ввод", callback_data="multi_finish")]
-            ])
-        )
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        await update.message.reply_text(
-            text,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(asset, callback_data=f"asset_{asset}")] 
-                for asset in ASSET_PRESETS[:6]
-            ] + [
-                [InlineKeyboardButton("📝 Ввести вручную", callback_data="asset_manual")],
-                [InlineKeyboardButton("🚀 Завершить ввод", callback_data="multi_finish")]
-            ])
-        )
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     
     return MultiTradeState.ASSET.value
 
@@ -795,7 +965,12 @@ async def multi_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
     
     if query.data == "asset_manual":
-        await query.edit_message_text("✍️ Введите название актива (например: BTCUSDT):")
+        await query.edit_message_text(
+            "✍️ Введите название актива (например: BTCUSDT):",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
+        )
         return MultiTradeState.ASSET.value
     
     elif query.data == "multi_finish":
@@ -810,7 +985,8 @@ async def multi_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "**Выберите направление сделки:**",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📈 LONG", callback_data="dir_LONG")],
-                [InlineKeyboardButton("📉 SHORT", callback_data="dir_SHORT")]
+                [InlineKeyboardButton("📉 SHORT", callback_data="dir_SHORT")],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
             ])
         )
         return MultiTradeState.DIRECTION.value
@@ -831,7 +1007,8 @@ async def multi_trade_asset_manual(update: Update, context: ContextTypes.DEFAULT
         "**Выберите направление сделки:**",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📈 LONG", callback_data="dir_LONG")],
-            [InlineKeyboardButton("📉 SHORT", callback_data="dir_SHORT")]
+            [InlineKeyboardButton("📉 SHORT", callback_data="dir_SHORT")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
         ])
     )
     return MultiTradeState.DIRECTION.value
@@ -846,7 +1023,10 @@ async def multi_trade_direction(update: Update, context: ContextTypes.DEFAULT_TY
     
     await query.edit_message_text(
         f"✅ Направление: {direction}\n\n"
-        "**Введите цену входа:**"
+        "**Введите цену входа:**",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+        ])
     )
     return MultiTradeState.ENTRY.value
 
@@ -864,7 +1044,10 @@ async def multi_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         await update.message.reply_text(
             f"✅ Цена входа: {entry_price}\n\n"
-            "**Введите уровень стоп-лосса:**"
+            "**Введите уровень стоп-лосса:**",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
         )
         return MultiTradeState.STOP_LOSS.value
         
@@ -895,18 +1078,43 @@ async def multi_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_TY
         
         context.user_data['current_trade']['stop_loss'] = stop_loss
         
+        # НОВОЕ: Переход к выбору уровня риска
+        keyboard = []
+        for risk_level in RISK_LEVELS:
+            keyboard.append([InlineKeyboardButton(risk_level, callback_data=f"risk_{risk_level}")])
+        
+        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
+        
         await update.message.reply_text(
             f"✅ Стоп-лосс: {stop_loss}\n\n"
-            "**Введите уровень тейк-профита:**"
+            "**Выберите уровень риска для этой сделки:**",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        return MultiTradeState.TAKE_PROFIT.value
+        return MultiTradeState.RISK_LEVEL.value
         
     except ValueError:
         await update.message.reply_text("❌ Введите число (например: 48000)\nПопробуйте еще раз:")
         return MultiTradeState.STOP_LOSS.value
 
+async def multi_trade_risk_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """НОВОЕ: Обработка выбора уровня риска для мультипозиции"""
+    query = update.callback_query
+    await query.answer()
+    
+    risk_level = query.data.replace('risk_', '')
+    context.user_data['current_trade']['risk_level'] = risk_level
+    
+    await query.edit_message_text(
+        f"✅ Уровень риска: {risk_level}\n\n"
+        "**Введите уровень тейк-профита:**",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+        ])
+    )
+    return MultiTradeState.TAKE_PROFIT.value
+
 async def multi_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка тейк-профита и показ промежуточных результатов"""
+    """Обработка тейк-профита и показ промежуточных результатов - ОБНОВЛЕН ВЫВОД"""
     text = update.message.text.strip()
     
     try:
@@ -930,16 +1138,17 @@ async def multi_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_
         current_trade = context.user_data['current_trade']
         current_trade['take_profit'] = take_profit
         
-        # Расчет метрик
+        # Расчет метрик с новым калькулятором
         deposit = context.user_data['deposit']
         leverage = context.user_data['leverage']
-        metrics = RiskCalculator.calculate_position_metrics(current_trade, deposit, leverage)
+        risk_level = current_trade['risk_level']
+        metrics = RiskCalculator.calculate_margin_metrics(current_trade, deposit, leverage, risk_level)
         current_trade['metrics'] = metrics
         
         # Добавляем сделку в список
         context.user_data['multi_trades'].append(current_trade.copy())
         
-        # Показываем результаты
+        # Показываем результаты с ПРОФЕССИОНАЛЬНЫМ ВЫВОДОМ
         trade_count = len(context.user_data['multi_trades'])
         text = (
             f"✅ **СДЕЛКА #{trade_count} ДОБАВЛЕНА**\n\n"
@@ -947,12 +1156,14 @@ async def multi_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_
             f"**Направление:** {current_trade['direction']}\n"
             f"**Вход:** {current_trade['entry_price']}\n"
             f"**SL:** {current_trade['stop_loss']}\n"
-            f"**TP:** {current_trade['take_profit']}\n\n"
-            f"**📊 РАСЧЕТ:**\n"
-            f"• Размер позиции: {metrics['position_size']:.2f}\n"
-            f"• Риск на сделку: ${metrics['risk_amount']:.2f} ({metrics['risk_percent']:.2f}%)\n"
-            f"• Потенциальная прибыль: ${metrics['potential_profit']:.2f}\n"
-            f"• Risk/Reward: {metrics['rr_ratio']:.2f}\n\n"
+            f"**TP:** {current_trade['take_profit']}\n"
+            f"**Риск:** {current_trade['risk_level']}\n\n"
+            f"**📊 ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ:**\n"
+            f"• Объем: {metrics['volume_lots']:.2f} лотов\n"
+            f"• Маржа: ${metrics['required_margin']:.2f}\n"
+            f"• Риск: ${metrics['risk_amount']:.2f}\n"
+            f"• Прибыль: ${metrics['potential_profit']:.2f}\n"
+            f"• R/R: {metrics['rr_ratio']:.2f}\n\n"
         )
         
         if trade_count >= 10:
@@ -964,6 +1175,8 @@ async def multi_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_
                 [InlineKeyboardButton("➕ Добавить следующую сделку", callback_data="add_another")],
                 [InlineKeyboardButton("📊 Перейти в портфель", callback_data="multi_finish")]
             ]
+        
+        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
         
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
         return MultiTradeState.ADD_MORE.value
@@ -998,6 +1211,7 @@ async def finish_multi_trade(update: Update, context: ContextTypes.DEFAULT_TYPE)
             PortfolioManager.add_multi_trade(user_id, trade)
     
     # Очищаем временные данные
+    DataManager.clear_temporary_progress(user_id)
     context.user_data.clear()
     
     # Переходим в портфель
@@ -1006,15 +1220,17 @@ async def finish_multi_trade(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def multi_trade_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отмена мультипозиционного расчета"""
+    user_id = update.message.from_user.id
+    DataManager.clear_temporary_progress(user_id)
     context.user_data.clear()
     await update.message.reply_text("❌ Расчет отменен")
     return ConversationHandler.END
 
 # ---------------------------
-# Portfolio Handlers
+# Portfolio Handlers - ОБНОВЛЕНЫ
 # ---------------------------
 async def show_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int = None):
-    """Показать портфель пользователя"""
+    """Показать портфель пользователя - ОБНОВЛЕН ВЫВОД"""
     if not user_id:
         if update.callback_query:
             user_id = update.callback_query.from_user.id
@@ -1031,19 +1247,19 @@ async def show_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE, use
     all_trades = trades + single_trades
     
     if not all_trades:
-        text = "📊 **ВАШ ПОРТФЕЛЬ**\n\nПортфель пуст. Начните с расчета сделок!"
+        text = "📊 **ВАШ ПОРТФЕЛЬ v2.0**\n\nПортфель пуст. Начните с расчета сделок!"
         keyboard = [
             [InlineKeyboardButton("🎯 Одна сделка", callback_data="single_trade")],
             [InlineKeyboardButton("📊 Мультипозиция", callback_data="multi_trade_start")]
         ]
     else:
-        # Расчет метрик портфеля
+        # Расчет метрик портфеля с новыми показателями
         metrics = PortfolioAnalyzer.calculate_portfolio_metrics(all_trades, deposit)
         recommendations = PortfolioAnalyzer.generate_recommendations(metrics, all_trades)
         correlations = PortfolioAnalyzer.analyze_correlations(all_trades)
         
         text = (
-            f"📊 **ВАШ ПОРТФЕЛЬ**\n\n"
+            f"📊 **ВАШ ПОРТФЕЛЬ v2.0**\n\n"
             f"**Основные параметры:**\n"
             f"• Депозит: ${deposit:,.2f}\n"
             f"• Плечо: {leverage}\n"
@@ -1054,6 +1270,8 @@ async def show_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE, use
             f"**📈 КЛЮЧЕВЫЕ МЕТРИКИ:**\n"
             f"• Общий риск: ${metrics['total_risk_usd']:.2f} ({metrics['total_risk_percent']:.1f}%)\n"
             f"• Потенциальная прибыль: ${metrics['total_profit']:.2f}\n"
+            f"• Общая маржа: ${metrics['total_margin']:.2f}\n"
+            f"• Уровень маржи портфеля: {metrics['portfolio_margin_level']:.1f}%\n"
             f"• Средний R/R: {metrics['avg_rr_ratio']:.2f}\n"
             f"• Волатильность портфеля: {metrics['portfolio_volatility']:.1f}%\n"
             f"• LONG/Short: {metrics['long_positions']}/{metrics['short_positions']}\n\n"
@@ -1070,6 +1288,8 @@ async def show_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE, use
             [InlineKeyboardButton("🎯 Новая сделка", callback_data="single_trade")],
             [InlineKeyboardButton("📊 Мультипозиция", callback_data="multi_trade_start")]
         ]
+    
+    keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
     
     if update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1089,12 +1309,13 @@ async def clear_portfolio_handler(update: Update, context: ContextTypes.DEFAULT_
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🎯 Одна сделка", callback_data="single_trade")],
             [InlineKeyboardButton("📊 Мультипозиция", callback_data="multi_trade_start")],
-            [InlineKeyboardButton("📋 В портфель", callback_data="portfolio")]
+            [InlineKeyboardButton("📋 В портфель", callback_data="portfolio")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
         ])
     )
 
 async def export_portfolio_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выгрузка отчета портфеля"""
+    """Выгрузка отчета портфеля - ОБНОВЛЕН ФОРМАТ"""
     query = update.callback_query
     user_id = query.from_user.id
     await query.answer()
@@ -1112,12 +1333,12 @@ async def export_portfolio_handler(update: Update, context: ContextTypes.DEFAULT
         await query.answer("Портфель пуст", show_alert=True)
         return
     
-    # Генерация текстового отчета
+    # Генерация текстового отчета с новыми метриками
     metrics = PortfolioAnalyzer.calculate_portfolio_metrics(all_trades, deposit)
     recommendations = PortfolioAnalyzer.generate_recommendations(metrics, all_trades)
     
     report_lines = [
-        "PRO RISK CALCULATOR - ОТЧЕТ ПОРТФЕЛЯ",
+        "PRO RISK CALCULATOR v2.0 - ОТЧЕТ ПОРТФЕЛЯ",
         f"Сгенерирован: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "",
         f"Депозит: ${deposit:,.2f}",
@@ -1126,28 +1347,31 @@ async def export_portfolio_handler(update: Update, context: ContextTypes.DEFAULT
         f"Одиночные сделки: {len(single_trades)}",
         f"Мультипозиции: {len(trades)}",
         "",
+        "ПРОФЕССИОНАЛЬНЫЕ МЕТРИКИ:",
+        "-" * 50,
+        f"Общий риск: ${metrics['total_risk_usd']:.2f} ({metrics['total_risk_percent']:.1f}%)",
+        f"Потенциальная прибыль: ${metrics['total_profit']:.2f}",
+        f"Общая маржа: ${metrics['total_margin']:.2f}",
+        f"Уровень маржи портфеля: {metrics['portfolio_margin_level']:.1f}%",
+        f"Средний R/R: {metrics['avg_rr_ratio']:.2f}",
+        f"Волатильность: {metrics['portfolio_volatility']:.1f}%",
+        f"Активов: {metrics['unique_assets']} | LONG: {metrics['long_positions']} | SHORT: {metrics['short_positions']}",
+        "",
         "ДЕТАЛИ СДЕЛОК:",
         "-" * 50
     ]
     
     for i, trade in enumerate(all_trades, 1):
         report_lines.extend([
-            f"{i}. {trade['asset']} {trade['direction']}",
+            f"{i}. {trade['asset']} {trade['direction']} | Риск: {trade.get('risk_level', 'N/A')}",
             f"   Вход: {trade['entry_price']} | SL: {trade['stop_loss']} | TP: {trade['take_profit']}",
-            f"   Размер: {trade['metrics']['position_size']:.2f} | Риск: ${trade['metrics']['risk_amount']:.2f}",
+            f"   Объем: {trade['metrics']['volume_lots']:.2f} лотов | Маржа: ${trade['metrics']['required_margin']:.2f}",
+            f"   Риск: ${trade['metrics']['risk_amount']:.2f} | Прибыль: ${trade['metrics']['potential_profit']:.2f}",
             f"   R/R: {trade['metrics']['rr_ratio']:.2f}",
             ""
         ])
     
     report_lines.extend([
-        "МЕТРИКИ ПОРТФЕЛЯ:",
-        "-" * 50,
-        f"Общий риск: ${metrics['total_risk_usd']:.2f} ({metrics['total_risk_percent']:.1f}%)",
-        f"Потенциальная прибыль: ${metrics['total_profit']:.2f}",
-        f"Средний R/R: {metrics['avg_rr_ratio']:.2f}",
-        f"Волатильность: {metrics['portfolio_volatility']:.1f}%",
-        f"Активов: {metrics['unique_assets']} | LONG: {metrics['long_positions']} | SHORT: {metrics['short_positions']}",
-        "",
         "РЕКОМЕНДАЦИИ:",
         "-" * 50
     ])
@@ -1158,15 +1382,15 @@ async def export_portfolio_handler(update: Update, context: ContextTypes.DEFAULT
     
     # Создаем файл
     bio = io.BytesIO(report_text.encode('utf-8'))
-    bio.name = f"portfolio_report_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
+    bio.name = f"portfolio_report_v2_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
     
     await query.message.reply_document(
         document=InputFile(bio, filename=bio.name),
-        caption="📊 Отчет вашего портфеля"
+        caption="📊 Отчет вашего портфеля v2.0"
     )
 
 # ---------------------------
-# Future Features Handler
+# Future Features Handler - ОБНОВЛЕН
 # ---------------------------
 async def future_features_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Раздел будущих разработок"""
@@ -1174,7 +1398,7 @@ async def future_features_handler(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     
     text = (
-        "🚀 **БУДУЩИЕ РАЗРАБОТКИ**\n\n"
+        "🚀 **БУДУЩИЕ РАЗРАБОТКИ v2.0**\n\n"
         
         "**📊 ИНТЕГРАЦИЯ С TRADINGVIEW**\n"
         "• Автоматический импорт уровней поддержки/сопротивления\n"
@@ -1204,11 +1428,64 @@ async def future_features_handler(update: Update, context: ContextTypes.DEFAULT_
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ---------------------------
-# Main Callback Router
+# Progress Restoration Handler - НОВЫЙ
+# ---------------------------
+async def restore_progress_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Восстановление сохраненного прогресса"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    await query.answer()
+    
+    temp_data = DataManager.load_temporary_data()
+    saved_progress = temp_data.get(str(user_id))
+    
+    if not saved_progress:
+        await query.answer("Нет сохраненного прогресса", show_alert=True)
+        return
+    
+    # Восстанавливаем данные
+    context.user_data.clear()
+    context.user_data.update(saved_progress['state_data'])
+    
+    state_type = saved_progress['state_type']
+    
+    if state_type == "single":
+        # Определяем текущее состояние
+        if 'take_profit' in context.user_data:
+            await query.answer("Прогресс восстановлен до этапа тейк-профита")
+            return await single_trade_take_profit(update, context)
+        elif 'risk_level' in context.user_data:
+            await query.edit_message_text(
+                "✅ Прогресс восстановлен!\n\nВведите уровень тейк-профита:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+                ])
+            )
+            return SingleTradeState.TAKE_PROFIT.value
+        elif 'stop_loss' in context.user_data:
+            # Показываем выбор уровня риска
+            keyboard = []
+            for risk_level in RISK_LEVELS:
+                keyboard.append([InlineKeyboardButton(risk_level, callback_data=f"risk_{risk_level}")])
+            
+            keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
+            
+            await query.edit_message_text(
+                "✅ Прогресс восстановлен!\n\nВыберите уровень риска:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return SingleTradeState.RISK_LEVEL.value
+    else:
+        # Мультипозиция - упрощенное восстановление
+        await query.answer("Прогресс мультипозиции восстановлен", show_alert=True)
+        return await start_trade_input(update, context)
+
+# ---------------------------
+# Main Callback Router - ОБНОВЛЕН
 # ---------------------------
 @performance_logger
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Маршрутизатор callback запросов"""
+    """Маршрутизатор callback запросов - ОБНОВЛЕН"""
     query = update.callback_query
     if not query:
         return
@@ -1221,6 +1498,13 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data == "main_menu":
         await start_command(update, context)
+    elif data == "main_menu_save":
+        # Определяем текущее состояние
+        current_state = None
+        if hasattr(context, '_conversation_state'):
+            current_state = context._conversation_state
+        
+        await main_menu_save_handler(update, context, current_state)
     elif data == "pro_calculation":
         keyboard = [
             [InlineKeyboardButton("🎯 Одна сделка", callback_data="single_trade")],
@@ -1229,7 +1513,6 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text("Выберите тип расчета:", reply_markup=InlineKeyboardMarkup(keyboard))
     elif data == "single_trade":
-        # Запуск одиночной сделки через ConversationHandler
         await single_trade_start(update, context)
     elif data == "multi_trade_start":
         await multi_trade_start(update, context)
@@ -1243,83 +1526,119 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await clear_portfolio_handler(update, context)
     elif data == "export_portfolio":
         await export_portfolio_handler(update, context)
+    elif data == "restore_progress":
+        await restore_progress_handler(update, context)
+    elif data.startswith("risk_"):
+        # Обработка выбора уровня риска
+        if hasattr(context, '_conversation_state'):
+            state = context._conversation_state
+            if state in [SingleTradeState.RISK_LEVEL.value, MultiTradeState.RISK_LEVEL.value]:
+                if state == SingleTradeState.RISK_LEVEL.value:
+                    await single_trade_risk_level(update, context)
+                else:
+                    await multi_trade_risk_level(update, context)
     else:
         logger.warning(f"Unknown callback data: {data}")
         await query.edit_message_text("⚠️ Функция временно недоступна")
 
 # ---------------------------
-# Conversation Handler Setup
+# Conversation Handler Setup - ОБНОВЛЕН
 # ---------------------------
 def setup_conversation_handlers(application: Application):
-    """Настройка обработчиков диалогов"""
+    """Настройка обработчиков диалогов - ОБНОВЛЕНА"""
     
-    # Одиночная сделка
+    # Одиночная сделка - ДОБАВЛЕН RISK_LEVEL
     single_trade_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(single_trade_start, pattern="^single_trade$")],
         states={
             SingleTradeState.DEPOSIT.value: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_deposit)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_deposit),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
             SingleTradeState.LEVERAGE.value: [
-                CallbackQueryHandler(single_trade_leverage, pattern="^lev_")
+                CallbackQueryHandler(single_trade_leverage, pattern="^lev_"),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
             SingleTradeState.ASSET.value: [
                 CallbackQueryHandler(single_trade_asset, pattern="^(asset_|asset_manual)"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_asset_manual)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_asset_manual),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
             SingleTradeState.DIRECTION.value: [
-                CallbackQueryHandler(single_trade_direction, pattern="^dir_")
+                CallbackQueryHandler(single_trade_direction, pattern="^dir_"),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
             SingleTradeState.ENTRY.value: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_entry)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_entry),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
             SingleTradeState.STOP_LOSS.value: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_stop_loss)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_stop_loss),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
+            ],
+            SingleTradeState.RISK_LEVEL.value: [  # НОВОЕ: состояние уровня риска
+                CallbackQueryHandler(single_trade_risk_level, pattern="^risk_"),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
             SingleTradeState.TAKE_PROFIT.value: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_take_profit)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_take_profit),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ]
         },
         fallbacks=[
             CommandHandler("cancel", single_trade_cancel),
-            MessageHandler(filters.TEXT, single_trade_cancel)
+            MessageHandler(filters.TEXT, single_trade_cancel),
+            CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
         ],
         name="single_trade_conversation"
     )
     
-    # Мультипозиция
+    # Мультипозиция - ДОБАВЛЕН RISK_LEVEL
     multi_trade_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(multi_trade_start, pattern="^multi_trade_start$")],
         states={
             MultiTradeState.DEPOSIT.value: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, multi_trade_deposit)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, multi_trade_deposit),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
             MultiTradeState.LEVERAGE.value: [
-                CallbackQueryHandler(multi_trade_leverage, pattern="^lev_")
+                CallbackQueryHandler(multi_trade_leverage, pattern="^lev_"),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
             MultiTradeState.ASSET.value: [
                 CallbackQueryHandler(multi_trade_asset, pattern="^(asset_|asset_manual|multi_finish)"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, multi_trade_asset_manual)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, multi_trade_asset_manual),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
             MultiTradeState.DIRECTION.value: [
-                CallbackQueryHandler(multi_trade_direction, pattern="^dir_")
+                CallbackQueryHandler(multi_trade_direction, pattern="^dir_"),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
             MultiTradeState.ENTRY.value: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, multi_trade_entry)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, multi_trade_entry),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
             MultiTradeState.STOP_LOSS.value: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, multi_trade_stop_loss)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, multi_trade_stop_loss),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
+            ],
+            MultiTradeState.RISK_LEVEL.value: [  # НОВОЕ: состояние уровня риска
+                CallbackQueryHandler(multi_trade_risk_level, pattern="^risk_"),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
             MultiTradeState.TAKE_PROFIT.value: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, multi_trade_take_profit)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, multi_trade_take_profit),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
             MultiTradeState.ADD_MORE.value: [
-                CallbackQueryHandler(multi_trade_add_another, pattern="^(add_another|multi_finish)$")
+                CallbackQueryHandler(multi_trade_add_another, pattern="^(add_another|multi_finish)$"),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ]
         },
         fallbacks=[
             CommandHandler("cancel", multi_trade_cancel),
-            MessageHandler(filters.TEXT, multi_trade_cancel)
+            MessageHandler(filters.TEXT, multi_trade_cancel),
+            CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
         ],
         name="multi_trade_conversation"
     )
@@ -1371,17 +1690,17 @@ async def main():
     """Основная функция"""
     application = Application.builder().token(TOKEN).build()
     
-    # Регистрация обработчиков - ВАЖНО: СНАЧАЛА ConversationHandler, ПОТОМ остальные
+    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("pro_info", pro_info_command))
     
-    # Настройка диалогов - ДОЛЖНЫ БЫТЬ ПЕРВЫМИ
+    # Настройка диалогов
     setup_conversation_handlers(application)
     
-    # Callback router - ПОСЛЕ ConversationHandler
+    # Callback router
     application.add_handler(CallbackQueryHandler(callback_router))
     
-    # Обработчик для любых сообщений (fallback) - ДОЛЖЕН БЫТЬ ПОСЛЕДНИМ
+    # Обработчик для любых сообщений (fallback)
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, 
         lambda update, context: update.message.reply_text(
