@@ -441,8 +441,31 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="main_menu")]]))
     elif data == "main_menu":
         await start_command(update, context)
+    elif data.startswith("multi_lev_"):
+        leverage = data.replace("multi_lev_", "")
+        context.user_data['multi_leverage'] = leverage
+        context.user_data['awaiting'] = 'multi_instrument'
+        await query.edit_message_text(f"Плечо: {leverage}\nВведите инструмент (например EURUSD):")
+    elif data == "multi_add_another":
+        context.user_data['awaiting'] = 'multi_instrument'
+        await query.edit_message_text("Добавьте еще инструмент:")
+    elif data == "multi_calculate":
+        trades = context.user_data.get('multi_trades', [])
+        deposit = context.user_data.get('multi_deposit', 0)
+        leverage = context.user_data.get('multi_leverage', '1:100')
+        
+        if not trades:
+            await query.edit_message_text("Нет сделок для расчета")
+            return
+            
+        PortfolioManager.add_multi_trades(user_id, trades, deposit, leverage)
+        report = ReportGenerator.generate_multi_report(trades, deposit, leverage)
+        bio = io.BytesIO(report.encode('utf-8'))
+        bio.name = "multi_report.txt"
+        await query.message.reply_document(document=InputFile(bio), caption="Мультиотчет")
+        context.user_data.clear()
     else:
-        await handle_main_menu_callbacks(query, context)
+        await query.edit_message_text("Функция в разработке")
 
 @performance_logger
 async def generic_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -454,89 +477,149 @@ async def generic_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # МУЛЬТИПОЗИЦИЯ
     if awaiting == 'multi_deposit':
         ok, val, msg = InputValidator.validate_number(text, 100)
-        if not ok: await update.message.reply_text(msg); return
+        if not ok: 
+            await update.message.reply_text(msg)
+            return
         context.user_data['multi_deposit'] = val
-        context.user_data['awaiting'] = 'multi_leverage'
-        await update.message.reply_text(f"Депозит: ${val:,.2f}\nВыберите плечо:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(l, callback_data=f"multi_lev_{l}")] for l in LEVERAGES]))
-    elif awaiting and awaiting.startswith('multi_lev_'):
-        lev = awaiting.replace("multi_lev_", "")
-        context.user_data['multi_leverage'] = lev
-        context.user_data['awaiting'] = 'multi_instrument'
-        await update.message.reply_text("Введите инструмент (например EURUSD):")
+        context.user_data['awaiting'] = None
+        await update.message.reply_text(f"Депозит: ${val:,.2f}\nВыберите плечо:", 
+                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(l, callback_data=f"multi_lev_{l}")] for l in LEVERAGES]))
+    
     elif awaiting == 'multi_instrument':
         ok, inst, msg = InputValidator.validate_instrument(text)
-        if not ok: await update.message.reply_text(msg); return
+        if not ok: 
+            await update.message.reply_text(msg)
+            return
         context.user_data['multi_current'] = {'instrument': inst}
         context.user_data['awaiting'] = 'multi_direction'
         await update.message.reply_text("Направление: BUY / SELL")
+    
     elif awaiting == 'multi_direction':
         d = text.upper()
-        if d not in ("BUY", "SELL"): await update.message.reply_text("BUY или SELL"); return
+        if d not in ("BUY", "SELL"): 
+            await update.message.reply_text("BUY или SELL")
+            return
         context.user_data['multi_current']['direction'] = d
         context.user_data['awaiting'] = 'multi_entry'
         await update.message.reply_text("Цена входа:")
+    
     elif awaiting == 'multi_entry':
         ok, val, msg = InputValidator.validate_price(text)
-        if not ok: await update.message.reply_text(msg); return
+        if not ok: 
+            await update.message.reply_text(msg)
+            return
         context.user_data['multi_current']['entry_price'] = val
         context.user_data['awaiting'] = 'multi_sl'
         await update.message.reply_text("Стоп-лосс:")
+    
     elif awaiting == 'multi_sl':
         ok, val, msg = InputValidator.validate_price(text)
-        if not ok: await update.message.reply_text(msg); return
+        if not ok: 
+            await update.message.reply_text(msg)
+            return
         context.user_data['multi_current']['stop_loss'] = val
         context.user_data['awaiting'] = 'multi_tp'
         await update.message.reply_text("Тейк-профит:")
+    
     elif awaiting == 'multi_tp':
         ok, val, msg = InputValidator.validate_price(text)
-        if not ok: await update.message.reply_text(msg); return
+        if not ok: 
+            await update.message.reply_text(msg)
+            return
         context.user_data['multi_current']['take_profit'] = val
         context.user_data['awaiting'] = 'multi_risk'
         await update.message.reply_text("Риск в %:")
+    
     elif awaiting == 'multi_risk':
         ok, val, msg = InputValidator.validate_number(text, 0.1, 20)
-        if not ok: await update.message.reply_text(msg); return
+        if not ok: 
+            await update.message.reply_text(msg)
+            return
+        
         trade = context.user_data['multi_current']
         trade['risk_percent'] = val / 100.0
+        
+        if 'multi_trades' not in context.user_data:
+            context.user_data['multi_trades'] = []
+            
         context.user_data['multi_trades'].append(trade.copy())
+        
         keyboard = [
             [InlineKeyboardButton("Добавить еще", callback_data="multi_add_another")],
             [InlineKeyboardButton("Рассчитать", callback_data="multi_calculate")],
             [InlineKeyboardButton("Отмена", callback_data="main_menu")]
         ]
-        await update.message.reply_text(f"Сделка добавлена: {trade['instrument']} {trade['direction']}\nВсего: {len(context.user_data['multi_trades'])}", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text(
+            f"Сделка добавлена: {trade['instrument']} {trade['direction']}\nВсего: {len(context.user_data['multi_trades'])}", 
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         context.user_data.pop('awaiting', None)
-    elif data == "multi_add_another":
-        context.user_data['awaiting'] = 'multi_instrument'
-        await query.edit_message_text("Добавьте еще инструмент:")
-    elif data == "multi_calculate":
-        trades = context.user_data['multi_trades']
-        deposit = context.user_data['multi_deposit']
-        leverage = context.user_data['multi_leverage']
-        PortfolioManager.add_multi_trades(user_id, trades, deposit, leverage)
-        report = ReportGenerator.generate_multi_report(trades, deposit, leverage)
-        bio = io.BytesIO(report.encode('utf-8'))
-        bio.name = "multi_report.txt"
-        await query.message.reply_document(document=InputFile(bio), caption="Мультиотчет")
-        context.user_data.clear()
+        context.user_data.pop('multi_current', None)
 
 # ---------------------------
 # Webhook & Main
 # ---------------------------
+async def set_webhook(application):
+    """Установка вебхука"""
+    try:
+        webhook_url = f"{WEBHOOK_URL}{WEBHOOK_PATH}"
+        await application.bot.set_webhook(url=webhook_url)
+        logger.info(f"Webhook установлен: {webhook_url}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка установки вебхука: {e}")
+        return False
+
+async def start_http_server(application):
+    """Запуск HTTP сервера"""
+    app = web.Application()
+    
+    async def handle_webhook(request):
+        """Обработчик вебхука"""
+        try:
+            data = await request.json()
+            update = Update.de_json(data, application.bot)
+            await application.process_update(update)
+            return web.Response(status=200)
+        except Exception as e:
+            logger.error(f"Webhook error: {e}")
+            return web.Response(status=400)
+    
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    
+    logger.info(f"HTTP сервер запущен на порту {PORT}")
+    return runner
+
 async def main():
+    """Основная функция"""
     application = Application.builder().token(TOKEN).build()
+    
+    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CallbackQueryHandler(callback_router))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, generic_text_handler))
 
-    if WEBHOOK_URL:
+    # Режим запуска
+    if WEBHOOK_URL and WEBHOOK_URL.strip():
+        logger.info("Запуск в режиме WEBHOOK")
         await application.initialize()
-        await application.start()
+        
         if await set_webhook(application):
             await start_http_server(application)
-            await asyncio.Event().wait()
-
-    await application.run_polling()
+            logger.info("Бот запущен в режиме WEBHOOK")
+            await asyncio.Event().wait()  # Бесконечное ожидание
+        else:
+            logger.error("Не удалось установить вебхук, запуск в режиме polling")
+            await application.run_polling()
+    else:
+        logger.info("Запуск в режиме POLLING")
+        await application.run_polling()
 
 if __name__ == "__main__":
     asyncio.run(main())
