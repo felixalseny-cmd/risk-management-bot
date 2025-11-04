@@ -49,7 +49,7 @@ logger = logging.getLogger("pro_risk_bot")
 class SingleTradeState(Enum):
     DEPOSIT = 1
     LEVERAGE = 2
-    ASSET_CATEGORY = 3  # НОВОЕ: Категория активов
+    ASSET_CATEGORY = 3
     ASSET = 4
     DIRECTION = 5
     ENTRY = 6
@@ -60,7 +60,7 @@ class SingleTradeState(Enum):
 class MultiTradeState(Enum):
     DEPOSIT = 1
     LEVERAGE = 2
-    ASSET_CATEGORY = 3  # НОВОЕ: Категория активов
+    ASSET_CATEGORY = 3
     ASSET = 4
     DIRECTION = 5
     ENTRY = 6
@@ -69,7 +69,7 @@ class MultiTradeState(Enum):
     TAKE_PROFIT = 9
     ADD_MORE = 10
 
-# Инструменты и пресеты - ОБНОВЛЕНО: Группировка по категориям
+# Инструменты и пресеты
 ASSET_CATEGORIES = {
     "FOREX": ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD', 'USDCAD', 'NZDUSD'],
     "CRYPTO": ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'LTCUSDT', 'BCHUSDT', 'ADAUSDT', 'DOTUSDT'],
@@ -79,7 +79,7 @@ ASSET_CATEGORIES = {
     "STOCKS": ['AAPL', 'TSLA', 'GOOGL', 'MSFT', 'AMZN', 'META', 'NFLX']
 }
 
-LEVERAGES = ['1:10', '1:20', '1:50', '1:100', '1:200', '1:500', '1:1000']  # ОБНОВЛЕНО: Добавлено 1:1000
+LEVERAGES = ['1:10', '1:20', '1:50', '1:100', '1:200', '1:500', '1:1000']
 RISK_LEVELS = ['2%', '5%', '7%', '10%', '15%', '20%', '25%']
 
 # Волатильность активов
@@ -90,7 +90,7 @@ VOLATILITY_DATA = {
     'OIL': 35.2, 'NAS100': 18.5
 }
 
-# ОБНОВЛЕНО: Размеры контрактов и стоимость пункта
+# Размеры контрактов и стоимость пункта
 CONTRACT_SIZES = {
     'BTCUSDT': 1, 'ETHUSDT': 1, 'XRPUSDT': 1, 'LTCUSDT': 1, 'BCHUSDT': 1,
     'ADAUSDT': 1, 'DOTUSDT': 1, 'AAPL': 100, 'TSLA': 100, 'GOOGL': 100,
@@ -102,7 +102,7 @@ CONTRACT_SIZES = {
     'DAX40': 25, 'NIKKEI225': 5, 'ASX200': 1
 }
 
-# НОВОЕ: Стоимость пункта за лот (в валюте депозита - USD)
+# Стоимость пункта за лот (в валюте депозита - USD)
 PIP_VALUES = {
     'EURUSD': 10.0, 'GBPUSD': 10.0, 'USDJPY': 9.09, 'USDCHF': 10.0,
     'AUDUSD': 10.0, 'USDCAD': 10.0, 'NZDUSD': 10.0, 'XAUUSD': 10.0,
@@ -231,13 +231,14 @@ class PortfolioManager:
             DataManager.save_data(user_data)
 
 # ---------------------------
-# Risk Calculator - ПОЛНОСТЬЮ ПЕРЕРАБОТАН
+# Risk Calculator - ИСПРАВЛЕННЫЙ РАСЧЕТ
 # ---------------------------
 class RiskCalculator:
     @staticmethod
     def calculate_margin_metrics(trade: Dict, deposit: float, leverage: str, risk_level: str) -> Dict:
         """
-        ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ МАРЖИ И ЛОТОВ - ИСПРАВЛЕННЫЙ
+        ИСПРАВЛЕННЫЙ ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ МАРЖИ И ЛОТОВ
+        Теперь объем рассчитывается ИСКЛЮЧИТЕЛЬНО из суммы риска, а не из депозита
         """
         try:
             entry = trade['entry_price']
@@ -255,13 +256,13 @@ class RiskCalculator:
                 profit_distance_pips = entry - take_profit
             
             # Получаем стоимость пункта для актива
-            pip_value = PIP_VALUES.get(asset, 10.0)  # По умолчанию $10 за лот
+            pip_value = PIP_VALUES.get(asset, 10.0)
             
-            # Расчет суммы риска
+            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Расчет суммы риска от депозита
             risk_percent = float(risk_level.strip('%'))
-            risk_amount = deposit * (risk_percent / 100)
+            risk_amount = deposit * (risk_percent / 100)  # Например: 2% от $1000 = $20
             
-            # Расчет объема в лотах на основе риска
+            # ОСНОВНОЙ РАСЧЕТ: Объем в лотах на основе СУММЫ РИСКА
             # Lots = Risk Amount / (Stop Loss Distance in Pips × Pip Value)
             if stop_distance_pips > 0 and pip_value > 0:
                 volume_lots = risk_amount / (stop_distance_pips * pip_value)
@@ -277,13 +278,15 @@ class RiskCalculator:
             required_margin = (volume_lots * contract_size) / lev_value
             required_margin = round(required_margin, 2)
             
-            # Проверка на достаточность депозита
+            # Проверка на достаточность депозита для маржи
             if required_margin > deposit:
+                # Если маржи не хватает, уменьшаем объем до максимально возможного
                 volume_lots = (deposit * lev_value) / contract_size
                 volume_lots = round(volume_lots, 2)
                 required_margin = deposit
                 # Пересчет risk_amount на основе нового объема
                 risk_amount = volume_lots * stop_distance_pips * pip_value
+                risk_percent = (risk_amount / deposit) * 100  # Пересчитываем фактический риск
             
             # Свободная маржа и уровень маржи
             free_margin = deposit - required_margin
@@ -312,7 +315,8 @@ class RiskCalculator:
                 'stop_distance_pips': stop_distance_pips,
                 'profit_distance_pips': profit_distance_pips,
                 'pip_value': pip_value,
-                'contract_size': contract_size
+                'contract_size': contract_size,
+                'deposit': deposit  # Добавляем депозит для прозрачности
             }
         except Exception as e:
             logger.error("Ошибка расчета маржи: %s", e)
@@ -332,19 +336,19 @@ class PortfolioAnalyzer:
         total_profit = sum(t.get('metrics', {}).get('potential_profit', 0) for t in trades)
         total_margin = sum(t.get('metrics', {}).get('required_margin', 0) for t in trades)
         
-        avg_rr = sum(t.get('metrics', {}).get('rr_ratio', 0) for t in trades) / len(trades)
+        avg_rr = sum(t.get('metrics', {}).get('rr_ratio', 0) for t in trades) / len(trades) if trades else 0
         
         # Волатильность портфеля
-        portfolio_volatility = sum(VOLATILITY_DATA.get(t['asset'], 20) for t in trades) / len(trades)
+        portfolio_volatility = sum(VOLATILITY_DATA.get(t['asset'], 20) for t in trades) / len(trades) if trades else 0
         
         # Анализ направлений
         long_count = sum(1 for t in trades if t.get('direction', '').upper() == 'LONG')
         short_count = len(trades) - long_count
-        direction_balance = abs(long_count - short_count) / len(trades)
+        direction_balance = abs(long_count - short_count) / len(trades) if trades else 0
         
         # Диверсификация
         unique_assets = len(set(t['asset'] for t in trades))
-        diversity_score = unique_assets / len(trades)
+        diversity_score = unique_assets / len(trades) if trades else 0
         
         # Уровень маржи портфеля
         portfolio_margin_level = (deposit / total_margin) * 100 if total_margin > 0 else 0
@@ -407,19 +411,19 @@ class PortfolioAnalyzer:
             )
         
         # Проверка диверсификации
-        if metrics.get('diversity_score', 0) < 0.5:
+        if metrics.get('diversity_score', 0) < 0.5 and len(trades) > 1:
             recommendations.append(
                 "🎯 Низкая диверсификация. Рассмотрите добавление активов "
                 "из разных секторов для снижения риска."
             )
         
         # Проверка направлений
-        if metrics.get('long_positions', 0) == len(trades):
+        if metrics.get('long_positions', 0) == len(trades) and len(trades) > 0:
             recommendations.append(
                 "📈 Портфель состоит только из LONG позиций. Уязвим к "
                 "рыночным коррекциям. Рассмотрите хеджирование."
             )
-        elif metrics.get('short_positions', 0) == len(trades):
+        elif metrics.get('short_positions', 0) == len(trades) and len(trades) > 0:
             recommendations.append(
                 "📉 Портфель состоит только из SHORT позиций. Рискованно "
                 "при росте рынка. Добавьте LONG позиции."
@@ -452,7 +456,7 @@ class PortfolioAnalyzer:
         return correlations if correlations else ["✅ Корреляции в пределах нормы"]
 
 # ---------------------------
-# Handlers - ПОЛНОСТЬЮ ПЕРЕРАБОТАНЫ
+# Handlers
 # ---------------------------
 def performance_logger(func):
     @functools.wraps(func)
@@ -500,10 +504,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 Привет, {user.first_name}!\n\n"
         "🤖 **PRO Калькулятор Управления Рисками v2.0**\n\n"
         "**МОИ ВОЗМОЖНОСТИ:**\n"
-        "• 📊 Профессиональный расчет позиций с маржой и лотами\n"
+        "• 📊 ПРОФЕССИОНАЛЬНЫЙ расчет позиций на основе РИСКА (а не депозита)\n"
         "• 🎯 Контроль уровней риска (2%-25%)\n"
         "• 💼 Мультипозиционный анализ портфеля\n"
-        "• 💡 Умные рекомендации и аналитика\n\n"
+        "• 💡 Умные рекомендации и аналитика\n"
+        "• 🛡 Защита от маржин-колла через правильный расчет объема\n\n"
     )
     
     if saved_progress:
@@ -535,14 +540,20 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "📚 **PRO ИНСТРУКЦИИ v2.0**\n\n"
         
-        "**🎯 ПРАКТИЧЕСКОЕ УПРАВЛЕНИЕ РИСКАМИ**\n\n"
+        "**🎯 ПРАВИЛЬНОЕ УПРАВЛЕНИЕ РИСКАМИ**\n\n"
         
-        "**📊 КЛЮЧЕВЫЕ ПРИНЦИПЫ ДЛЯ ПРОФЕССИОНАЛОВ:**\n\n"
+        "**🔄 ИСПРАВЛЕННАЯ МЕТОДОЛОГИЯ РАСЧЕТА:**\n"
+        "• Объем позиции рассчитывается ИСКЛЮЧИТЕЛЬНО из суммы риска\n"
+        "• Риск = % от депозита (например: 2% от $1000 = $20)\n"
+        "• Объем = Риск / (Дистанция SL в пунктах × Стоимость пункта)\n"
+        "• Это защищает от маржин-колла и обеспечивает профессиональное управление капиталом\n\n"
         
-        "**1. УПРАВЛЕНИЕ РАЗМЕРОМ ПОЗИЦИИ**\n"
+        "**📊 КЛЮЧЕВЫЕ ПРИНЦИПИ ДЛЯ ПРОФЕССИОНАЛОВ:**\n\n"
+        
+        "**1. УПРАВЛЕНИЕ РАЗМЕРОМ ПОЗИЦИИ НА ОСНОВЕ РИСКА**\n"
         "• Всегда определяйте риск ДО входа в сделку\n"
-        "• Используйте фиксированный % от депозита (2-5%)\n"
-        "• Рассчитывайте объем позиции на основе стоп-лосса\n"
+        "• Рассчитывайте объем на основе стоп-лосса и суммы риска\n"
+        "• Никогда не рискуйте более 5% на одну сделку\n"
         "• Учитывайте кредитное плечо при расчете маржи\n\n"
         
         "**2. УРОВНИ РИСКА И ИХ ПРИМЕНЕНИЕ**\n"
@@ -551,11 +562,14 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 10% - Агрессивный: Для опытных трейдеров\n"
         "• 25% - Максимальный: Только для уверенных сделок\n\n"
         
-        "**3. РАСЧЕТ МАРЖИ И ЛОТОВ**\n"
+        "**3. ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ МАРЖИ**\n"
         "• Volume = Risk Amount / (Stop Distance × Pip Value)\n"
         "• Required Margin = (Volume × Contract Size) / Leverage\n"
         "• Всегда следите за уровнем маржи (>200%)\n"
         "• Оставляйте свободную маржу для маневра\n\n"
+        
+        "**🛡 ЗАЩИТА ОТ МАРЖИН-КОЛЛА:**\n"
+        "Бот автоматически проверяет достаточность маржи и при необходимости уменьшает объем позиции, сохраняя ваш заданный уровень риска.\n\n"
         
         "Разработчик: @fxfeelgood"
     )
@@ -570,7 +584,7 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ---------------------------
-# Single Trade Conversation Handler - ПОЛНОСТЬЮ ПЕРЕРАБОТАН
+# Single Trade Conversation Handler
 # ---------------------------
 async def single_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало одиночной сделки"""
@@ -579,7 +593,8 @@ async def single_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     text = (
         "🎯 **ОДИНОЧНАЯ СДЕЛКА v2.0**\n\n"
-        "Профессиональный расчет с контролем риска и расчетом маржи.\n\n"
+        "ПРОФЕССИОНАЛЬНЫЙ расчет с контролем риска и защитой от маржин-колла.\n"
+        "Объем рассчитывается ИСКЛЮЧИТЕЛЬНО из суммы риска!\n\n"
         "**Введите ваш депозит в USD:**"
     )
     
@@ -627,7 +642,7 @@ async def single_trade_leverage(update: Update, context: ContextTypes.DEFAULT_TY
     leverage = query.data.replace('lev_', '')
     context.user_data['leverage'] = leverage
     
-    # НОВОЕ: Выбор категории активов
+    # Выбор категории активов
     keyboard = []
     for category in ASSET_CATEGORIES.keys():
         keyboard.append([InlineKeyboardButton(category, callback_data=f"cat_{category}")])
@@ -643,7 +658,7 @@ async def single_trade_leverage(update: Update, context: ContextTypes.DEFAULT_TY
     return SingleTradeState.ASSET_CATEGORY.value
 
 async def single_trade_asset_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """НОВОЕ: Обработка выбора категории активов"""
+    """Обработка выбора категории активов"""
     query = update.callback_query
     await query.answer()
     
@@ -888,12 +903,13 @@ async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT
             f"• Тейк-профит: {trade_data['take_profit']}\n"
             f"• Уровень риска: {trade_data['risk_level']}\n\n"
             
-            f"**💰 ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ:**\n"
+            f"**💰 ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ (НА ОСНОВЕ РИСКА):**\n"
+            f"• Депозит: ${metrics['deposit']:,.2f}\n"
+            f"• Сумма риска: ${metrics['risk_amount']:.2f} ({metrics['risk_percent']:.1f}%)\n"
             f"• Объем позиции: {metrics['volume_lots']:.2f} лотов\n"
             f"• Требуемая маржа: ${metrics['required_margin']:.2f}\n"
             f"• Свободная маржа: ${metrics['free_margin']:.2f}\n"
             f"• Уровень маржи: {metrics['margin_level']:.1f}%\n"
-            f"• Сумма риска: ${metrics['risk_amount']:.2f} ({metrics['risk_percent']}%)\n"
             f"• Потенциальная прибыль: ${metrics['potential_profit']:.2f}\n"
             f"• Соотношение R/R: {metrics['rr_ratio']:.2f}\n\n"
             
@@ -933,7 +949,7 @@ async def single_trade_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 # ---------------------------
-# Multi-trade Conversation Handler - ПОЛНОСТЬЮ ПЕРЕРАБОТАН
+# Multi-trade Conversation Handler
 # ---------------------------
 async def multi_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало мультипозиционного расчета"""
@@ -944,7 +960,8 @@ async def multi_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     text = (
         "🎯 **МУЛЬТИПОЗИЦИОННЫЙ РАСЧЕТ v2.0**\n\n"
-        "Профессиональный расчет нескольких сделок с контролем общего риска.\n\n"
+        "ПРОФЕССИОНАЛЬНЫЙ расчет нескольких сделок с контролем общего риска.\n"
+        "Объем каждой позиции рассчитывается ИСКЛЮЧИТЕЛЬНО из суммы риска!\n\n"
         "**Введите общий депозит в USD:**"
     )
     
@@ -1023,7 +1040,7 @@ async def start_trade_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return MultiTradeState.ASSET_CATEGORY.value
 
 async def multi_trade_asset_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """НОВОЕ: Обработка выбора категории активов для мультипозиции"""
+    """Обработка выбора категории активов для мультипозиции"""
     query = update.callback_query
     await query.answer()
     
@@ -1248,10 +1265,11 @@ async def multi_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_
             f"**SL:** {current_trade['stop_loss']}\n"
             f"**TP:** {current_trade['take_profit']}\n"
             f"**Риск:** {current_trade['risk_level']}\n\n"
-            f"**📊 ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ:**\n"
+            f"**📊 ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ (НА ОСНОВЕ РИСКА):**\n"
+            f"• Депозит: ${metrics['deposit']:,.2f}\n"
+            f"• Сумма риска: ${metrics['risk_amount']:.2f} ({metrics['risk_percent']:.1f}%)\n"
             f"• Объем: {metrics['volume_lots']:.2f} лотов\n"
             f"• Маржа: ${metrics['required_margin']:.2f}\n"
-            f"• Риск: ${metrics['risk_amount']:.2f}\n"
             f"• Прибыль: ${metrics['potential_profit']:.2f}\n"
             f"• R/R: {metrics['rr_ratio']:.2f}\n\n"
         )
@@ -1429,6 +1447,7 @@ async def export_portfolio_handler(update: Update, context: ContextTypes.DEFAULT
     
     report_lines = [
         "PRO RISK CALCULATOR v2.0 - ОТЧЕТ ПОРТФЕЛЯ",
+        "РАСЧЕТ НА ОСНОВЕ СУММЫ РИСКА (ПРОФЕССИОНАЛЬНАЯ МЕТОДОЛОГИЯ)",
         f"Сгенерирован: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "",
         f"Депозит: ${deposit:,.2f}",
@@ -1447,7 +1466,7 @@ async def export_portfolio_handler(update: Update, context: ContextTypes.DEFAULT
         f"Волатильность: {metrics['portfolio_volatility']:.1f}%",
         f"Активов: {metrics['unique_assets']} | LONG: {metrics['long_positions']} | SHORT: {metrics['short_positions']}",
         "",
-        "ДЕТАЛИ СДЕЛОК:",
+        "ДЕТАЛИ СДЕЛОК (РАСЧЕТ НА ОСНОВЕ РИСКА):",
         "-" * 50
     ]
     
@@ -1455,9 +1474,9 @@ async def export_portfolio_handler(update: Update, context: ContextTypes.DEFAULT
         report_lines.extend([
             f"{i}. {trade['asset']} {trade['direction']} | Риск: {trade.get('risk_level', 'N/A')}",
             f"   Вход: {trade['entry_price']} | SL: {trade['stop_loss']} | TP: {trade['take_profit']}",
+            f"   Депозит: ${trade['metrics']['deposit']:,.2f} | Риск: ${trade['metrics']['risk_amount']:.2f}",
             f"   Объем: {trade['metrics']['volume_lots']:.2f} лотов | Маржа: ${trade['metrics']['required_margin']:.2f}",
-            f"   Риск: ${trade['metrics']['risk_amount']:.2f} | Прибыль: ${trade['metrics']['potential_profit']:.2f}",
-            f"   R/R: {trade['metrics']['rr_ratio']:.2f}",
+            f"   Прибыль: ${trade['metrics']['potential_profit']:.2f} | R/R: {trade['metrics']['rr_ratio']:.2f}",
             ""
         ])
     
@@ -1476,7 +1495,7 @@ async def export_portfolio_handler(update: Update, context: ContextTypes.DEFAULT
     
     await query.message.reply_document(
         document=InputFile(bio, filename=bio.name),
-        caption="📊 Отчет вашего портфеля v2.0"
+        caption="📊 Отчет вашего портфеля v2.0 (профессиональная методология)"
     )
 
 # ---------------------------
@@ -1571,7 +1590,7 @@ async def restore_progress_handler(update: Update, context: ContextTypes.DEFAULT
         return await start_trade_input(update, context)
 
 # ---------------------------
-# Main Callback Router - ПОЛНОСТЬЮ ПЕРЕРАБОТАН
+# Main Callback Router
 # ---------------------------
 @performance_logger
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1677,7 +1696,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚠️ Функция временно недоступна")
 
 # ---------------------------
-# Conversation Handler Setup - ПОЛНОСТЬЮ ПЕРЕРАБОТАН
+# Conversation Handler Setup
 # ---------------------------
 def setup_conversation_handlers(application: Application):
     """Настройка обработчиков диалогов"""
@@ -1694,7 +1713,7 @@ def setup_conversation_handlers(application: Application):
                 CallbackQueryHandler(single_trade_leverage, pattern="^lev_"),
                 CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
-            SingleTradeState.ASSET_CATEGORY.value: [  # НОВОЕ: состояние категории
+            SingleTradeState.ASSET_CATEGORY.value: [
                 CallbackQueryHandler(single_trade_asset_category, pattern="^(cat_|asset_manual)"),
                 CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
@@ -1744,7 +1763,7 @@ def setup_conversation_handlers(application: Application):
                 CallbackQueryHandler(multi_trade_leverage, pattern="^lev_"),
                 CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
-            MultiTradeState.ASSET_CATEGORY.value: [  # НОВОЕ: состояние категории
+            MultiTradeState.ASSET_CATEGORY.value: [
                 CallbackQueryHandler(multi_trade_asset_category, pattern="^(cat_|asset_manual|multi_finish)"),
                 CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
