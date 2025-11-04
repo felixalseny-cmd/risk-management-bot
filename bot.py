@@ -23,6 +23,14 @@ from telegram.ext import (
 )
 from aiohttp import web
 
+# Добавлена оптимизированная сериализация
+try:
+    import orjson
+    ORJSON_AVAILABLE = True
+except ImportError:
+    ORJSON_AVAILABLE = False
+    import json
+
 # === НАСТРОЙКИ ДЛЯ RENDER ===
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
@@ -145,8 +153,12 @@ class DataManager:
         """Загрузка данных из файла"""
         try:
             if os.path.exists(DATA_FILE):
-                with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                if ORJSON_AVAILABLE:
+                    with open(DATA_FILE, 'rb') as f:
+                        return orjson.loads(f.read())
+                else:
+                    with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                        return json.load(f)
             return {}
         except Exception as e:
             logger.error(f"Ошибка загрузки данных: {e}")
@@ -156,9 +168,17 @@ class DataManager:
     def save_data():
         """Сохранение данных в файл"""
         try:
-            with open(DATA_FILE, 'w', encoding='utf-8') as f:
-                json.dump(user_data, f, ensure_ascii=False, indent=2)
-            logger.info("Данные успешно сохранены")
+            if ORJSON_AVAILABLE:
+                with open(DATA_FILE, 'wb') as f:
+                    f.write(orjson.dumps(
+                        user_data, 
+                        option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS
+                    ))
+            else:
+                with open(DATA_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(user_data, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"Данные успешно сохранены (orjson: {ORJSON_AVAILABLE})")
         except Exception as e:
             logger.error(f"Ошибка сохранения данных: {e}")
 
@@ -176,6 +196,12 @@ class FastCache:
         if key in self.cache:
             data, timestamp = self.cache[key]
             if time.time() - timestamp < self.ttl:
+                # Десериализуем данные если они в бинарном формате
+                if ORJSON_AVAILABLE and isinstance(data, bytes):
+                    try:
+                        return orjson.loads(data)
+                    except:
+                        return data
                 return data
             else:
                 del self.cache[key]
@@ -187,7 +213,14 @@ class FastCache:
             oldest_keys = sorted(self.cache.keys(), key=lambda k: self.cache[k][1])[:10]
             for old_key in oldest_keys:
                 del self.cache[old_key]
-        self.cache[key] = (value, time.time())
+        
+        # Сериализуем сложные объекты с помощью orjson если доступен
+        if ORJSON_AVAILABLE and isinstance(value, (dict, list)):
+            serialized_value = orjson.dumps(value)
+        else:
+            serialized_value = value
+            
+        self.cache[key] = (serialized_value, time.time())
 
 fast_cache = FastCache()
 
@@ -1748,6 +1781,11 @@ def create_application():
         return None
 
     logger.info("🚀 Запуск ПРОФЕССИОНАЛЬНОГО калькулятора рисков v4.0...")
+    logger.info(f"🚀 Orjson доступен: {ORJSON_AVAILABLE}")
+    if ORJSON_AVAILABLE:
+        logger.info("✅ Ускоренная сериализация данных активирована")
+    else:
+        logger.info("⚠️ Используется стандартный json (установите orjson для ускорения)")
     
     # Создаем приложение
     application = Application.builder().token(token).build()
