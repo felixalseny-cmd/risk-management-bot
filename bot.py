@@ -64,10 +64,6 @@ class RobustApplicationBuilder:
         # Настройка параметров запросов
         request = telegram.request.HTTPXRequest(
             connection_pool_size=8,
-            read_timeout=30.0,
-            write_timeout=30.0,
-            connect_timeout=30.0,
-            pool_timeout=30.0,
         )
         
         # Создание приложения с настройками
@@ -75,10 +71,6 @@ class RobustApplicationBuilder:
             Application.builder()
             .token(token)
             .request(request)
-            .connect_timeout(30.0)
-            .read_timeout(30.0)
-            .write_timeout(30.0)
-            .pool_timeout(30.0)
             .build()
         )
         
