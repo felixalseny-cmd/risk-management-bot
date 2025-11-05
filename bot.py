@@ -9,6 +9,7 @@ import io
 import re
 import aiohttp
 import cachetools
+from telegram import CallbackQuery
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Tuple, Optional
 from enum import Enum
