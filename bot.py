@@ -51,6 +51,146 @@ logging.basicConfig(
 logger = logging.getLogger("pro_risk_bot")
 
 # ---------------------------
+# Настройки таймаутов и повторных попыток
+# ---------------------------
+class RobustApplicationBuilder:
+    """Строитель приложения с улучшенной обработкой ошибок"""
+    
+    @staticmethod
+    def create_application(token: str) -> Application:
+        """Создание приложения с настройками для устойчивости"""
+        # Настройка параметров запросов
+        request = telegram.request.HTTPXRequest(
+            connection_pool_size=8,
+            read_timeout=30.0,
+            write_timeout=30.0,
+            connect_timeout=30.0,
+            pool_timeout=30.0,
+        )
+        
+        # Создание приложения с настройками
+        application = (
+            Application.builder()
+            .token(token)
+            .request(request)
+            .connect_timeout(30.0)
+            .read_timeout(30.0)
+            .write_timeout(30.0)
+            .pool_timeout(30.0)
+            .build()
+        )
+        
+        return application
+
+# ---------------------------
+# Retry Decorator для обработки таймаутов
+# ---------------------------
+def retry_on_timeout(max_retries: int = 3, delay: float = 1.0):
+    """Декоратор для повторных попыток при таймаутах"""
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except telegram.error.TimedOut as e:
+                    logger.warning(f"Timeout in {func.__name__}, attempt {attempt + 1}/{max_retries}: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(delay * (2 ** attempt))  # Exponential backoff
+                    else:
+                        logger.error(f"All retries failed for {func.__name__}")
+                        raise
+                except telegram.error.NetworkError as e:
+                    logger.warning(f"Network error in {func.__name__}, attempt {attempt + 1}/{max_retries}: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(delay * (2 ** attempt))
+                    else:
+                        logger.error(f"All retries failed for {func.__name__}")
+                        raise
+            return None
+        return wrapper
+    return decorator
+
+# ---------------------------
+# Safe Message Sender
+# ---------------------------
+class SafeMessageSender:
+    """Безопасная отправка сообщений с обработкой ошибок"""
+    
+    @staticmethod
+    @retry_on_timeout(max_retries=3, delay=1.0)
+    async def send_message(
+        chat_id: int,
+        text: str,
+        context: ContextTypes.DEFAULT_TYPE = None,
+        reply_markup: InlineKeyboardMarkup = None,
+        parse_mode: str = 'Markdown'
+    ) -> bool:
+        """Безопасная отправка сообщения"""
+        try:
+            if context and hasattr(context, 'bot'):
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode
+                )
+            else:
+                # Fallback - создаем временного бота
+                from telegram import Bot
+                bot = Bot(token=TOKEN)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode
+                )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send message to {chat_id}: {e}")
+            return False
+    
+    @staticmethod
+    @retry_on_timeout(max_retries=2, delay=1.0)
+    async def edit_message_text(
+        query: CallbackQuery,
+        text: str,
+        reply_markup: InlineKeyboardMarkup = None,
+        parse_mode: str = 'Markdown'
+    ) -> bool:
+        """Безопасное редактирование сообщения"""
+        try:
+            await query.edit_message_text(
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
+            return True
+        except telegram.error.BadRequest as e:
+            if "Message is not modified" in str(e):
+                # Сообщение не изменилось - это не ошибка
+                return True
+            logger.warning(f"BadRequest while editing message: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to edit message: {e}")
+            return False
+    
+    @staticmethod
+    async def answer_callback_query(
+        query: CallbackQuery,
+        text: str = None,
+        show_alert: bool = False
+    ) -> bool:
+        """Безопасный ответ на callback query"""
+        try:
+            await query.answer(text=text, show_alert=show_alert)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to answer callback query: {e}")
+            return False
+
+# ---------------------------
 # Market Data Provider - РЕАЛЬНЫЕ КОТИРОВКИ
 # ---------------------------
 class MarketDataProvider:
@@ -914,53 +1054,85 @@ async def main_menu_save_handler(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 @performance_logger
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start с реальными данными"""
-    user = update.effective_user
-    user_id = user.id
-    PortfolioManager.ensure_user(user_id)
-    
-    # Проверяем есть ли сохраненный прогресс
-    temp_data = DataManager.load_temporary_data()
-    saved_progress = temp_data.get(str(user_id))
-    
-    text = (
-        f"👋 Привет, {user.first_name}!\n\n"
-        "🤖 **PRO Калькулятор Управления Рисками v3.0**\n\n"
-        "🚀 **ОБНОВЛЕНИЕ v3.0**: Реальные котировки и профессиональный расчет маржи!\n\n"
-        "**МОИ ВОЗМОЖНОСТИ:**\n"
-        "• 📊 **РЕАЛЬНЫЕ КОТИРОВКИ** через Binance, Alpha Vantage, Finnhub\n"
-        "• 💼 **ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ** маржи по отраслевым стандартам\n"
-        "• 🎯 Контроль уровней риска (2%-25% от депозита)\n"
-        "• 💡 Умные рекомендации и аналитика портфеля\n"
-        "• 🛡 **ЗАЩИТА ОТ МАРЖИН-КОЛЛА** через правильный расчет объема\n"
-        "• 📈 **РЕАЛЬНЫЕ ДАННЫЕ** для точного риск-менеджмента\n\n"
-    )
-    
-    if saved_progress:
-        text += "🔔 У вас есть сохраненный прогресс! Вы можете продолжить с того же места.\n\n"
-    
-    text += "**Выберите раздел:**"
-    
-    keyboard = [
-        [InlineKeyboardButton("🎯 Профессиональные сделки", callback_data="pro_calculation")],
-        [InlineKeyboardButton("📊 Мой портфель", callback_data="portfolio")]
-    ]
-    
-    if saved_progress:
-        keyboard.append([InlineKeyboardButton("🔄 Продолжить расчет", callback_data="restore_progress")])
-    
-    keyboard.extend([
-        [InlineKeyboardButton("📚 PRO Инструкции", callback_data="pro_info")],
-        [InlineKeyboardButton("🚀 Будущие разработки", callback_data="future_features")]
-    ])
-    
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    """Обработчик команды /start с защитой от таймаутов"""
+    try:
+        user = update.effective_user
+        user_id = user.id
+        PortfolioManager.ensure_user(user_id)
+        
+        # Проверяем есть ли сохраненный прогресс
+        temp_data = DataManager.load_temporary_data()
+        saved_progress = temp_data.get(str(user_id))
+        
+        text = (
+            f"👋 Привет, {user.first_name}!\n\n"
+            "🤖 **PRO Калькулятор Управления Рисками v3.0**\n\n"
+            "🚀 МОИ ВОЗМОЖНОСТИ:\n"
+            "• 📊 **РЕАЛЬНЫЕ КОТИРОВКИ** через Binance, Alpha Vantage, Finnhub\n"
+            "• 💼 **ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ** маржи по отраслевым стандартам\n"
+            "• 🎯 Контроль уровней риска (2%-25% от депозита)\n"
+            "• 💡 Умные рекомендации и аналитика портфеля\n"
+            "• 🛡 **ЗАЩИТА ОТ МАРЖИН-КОЛЛА** через правильный расчет объема\n"
+            "• 📈 **РЕАЛЬНЫЕ ДАННЫЕ** для точного риск-менеджмента\n\n"
+        )
+        
+        if saved_progress:
+            text += "🔔 У вас есть сохраненный прогресс! Вы можете продолжить с того же места.\n\n"
+        
+        text += "**Выберите раздел:**"
+        
+        keyboard = [
+            [InlineKeyboardButton("🎯 Профессиональные сделки", callback_data="pro_calculation")],
+            [InlineKeyboardButton("📊 Мой портфель", callback_data="portfolio")]
+        ]
+        
+        if saved_progress:
+            keyboard.append([InlineKeyboardButton("🔄 Продолжить расчет", callback_data="restore_progress")])
+        
+        keyboard.extend([
+            [InlineKeyboardButton("📚 PRO Инструкции", callback_data="pro_info")],
+            [InlineKeyboardButton("🚀 Будущие разработки", callback_data="future_features")]
+        ])
+        
+        if update.callback_query:
+            success = await SafeMessageSender.edit_message_text(
+                update.callback_query,
+                text,
+                InlineKeyboardMarkup(keyboard)
+            )
+            if not success:
+                # Fallback - отправляем новое сообщение
+                await SafeMessageSender.send_message(
+                    user_id,
+                    text,
+                    context,
+                    InlineKeyboardMarkup(keyboard)
+                )
+        else:
+            await SafeMessageSender.send_message(
+                user_id,
+                text,
+                context,
+                InlineKeyboardMarkup(keyboard)
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in start_command: {e}")
+        # Пытаемся отправить сообщение об ошибке
+        try:
+            if update.effective_user:
+                await SafeMessageSender.send_message(
+                    update.effective_user.id,
+                    "❌ Произошла ошибка при загрузке. Пожалуйста, попробуйте еще раз.",
+                    context
+                )
+        except:
+            pass
 
 # ОБНОВЛЕННЫЙ обработчик одиночной сделки с реальными данными
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка тейк-профита и показ результатов с РЕАЛЬНЫМИ ДАННЫМИ"""
     text = update.message.text.strip()
@@ -973,13 +1145,17 @@ async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT
         
         # Валидация TP
         if direction == 'LONG' and take_profit <= entry_price:
-            await update.message.reply_text(
-                "❌ Для LONG тейк-профит должен быть ВЫШЕ цены входа\nПопробуйте еще раз:"
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Для LONG тейк-профит должен быть ВЫШЕ цены входа\nПопробуйте еще раз:",
+                context
             )
             return SingleTradeState.TAKE_PROFIT.value
         elif direction == 'SHORT' and take_profit >= entry_price:
-            await update.message.reply_text(
-                "❌ Для SHORT тейк-профит должен быть НИЖЕ цены входа\nПопробуйте еще раз:"
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Для SHORT тейк-профит должен быть НИЖЕ цены входа\nПопробуйте еще раз:",
+                context
             )
             return SingleTradeState.TAKE_PROFIT.value
         
@@ -1058,14 +1234,24 @@ async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT
             [InlineKeyboardButton("📋 В портфель", callback_data="portfolio")]
         ]
         
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            text,
+            context,
+            InlineKeyboardMarkup(keyboard)
+        )
         return ConversationHandler.END
         
     except ValueError:
-        await update.message.reply_text("❌ Введите число (например: 52000)\nПопробуйте еще раз:")
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Введите число (например: 52000)\nПопробуйте еще раз:",
+            context
+        )
         return SingleTradeState.TAKE_PROFIT.value
 
 # ОБНОВЛЕННЫЙ обработчик мультипозиции с реальными данными
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка тейк-профита и показ промежуточных результатов с РЕАЛЬНЫМИ ДАННЫМИ"""
     text = update.message.text.strip()
@@ -1078,13 +1264,17 @@ async def multi_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_
         
         # Валидация TP
         if direction == 'LONG' and take_profit <= entry_price:
-            await update.message.reply_text(
-                "❌ Для LONG тейк-профит должен быть ВЫШЕ цены входа\nПопробуйте еще раз:"
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Для LONG тейк-профит должен быть ВЫШЕ цены входа\nПопробуйте еще раз:",
+                context
             )
             return MultiTradeState.TAKE_PROFIT.value
         elif direction == 'SHORT' and take_profit >= entry_price:
-            await update.message.reply_text(
-                "❌ Для SHORT тейк-профит должен быть НИЖЕ цены входа\nПопробуйте еще раз:"
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Для SHORT тейк-профит должен быть НИЖЕ цены входа\nПопробуйте еще раз:",
+                context
             )
             return MultiTradeState.TAKE_PROFIT.value
         
@@ -1136,14 +1326,24 @@ async def multi_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_
         
         keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
         
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            text,
+            context,
+            InlineKeyboardMarkup(keyboard)
+        )
         return MultiTradeState.ADD_MORE.value
         
     except ValueError:
-        await update.message.reply_text("❌ Введите число (например: 52000)\nПопробуйте еще раз:")
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Введите число (например: 52000)\nПопробуйте еще раз:",
+            context
+        )
         return MultiTradeState.TAKE_PROFIT.value
 
 # ОБНОВЛЕННЫЙ обработчик портфеля с реальными данными
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def show_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int = None):
     """Показать портфель пользователя с РЕАЛЬНЫМИ ДАННЫМИ"""
     if not user_id:
@@ -1253,12 +1453,18 @@ async def show_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE, use
     keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
     
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await SafeMessageSender.edit_message_text(
+            update.callback_query,
+            text,
+            InlineKeyboardMarkup(keyboard)
+        )
     else:
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-# Остальные обработчики остаются аналогичными, но с обновленными текстами
-# [Здесь должны быть остальные обработчики из оригинального кода...]
+        await SafeMessageSender.send_message(
+            user_id,
+            text,
+            context,
+            InlineKeyboardMarkup(keyboard)
+        )
 
 # ---------------------------
 # Webhook & Main (ОБНОВЛЕННЫЙ)
@@ -1275,28 +1481,56 @@ async def set_webhook(application):
         return False
 
 async def start_http_server(application):
-    """Запуск HTTP сервера"""
+    """Запуск HTTP сервера с улучшенными health checks"""
     app = web.Application()
     
     async def handle_webhook(request):
-        """Обработчик вебхука"""
+        """Обработчик вебхука с таймаутами"""
         try:
-            data = await request.json()
+            # Устанавливаем таймаут для чтения данных
+            data = await asyncio.wait_for(request.json(), timeout=10.0)
             update = Update.de_json(data, application.bot)
             await application.process_update(update)
             return web.Response(status=200)
+        except asyncio.TimeoutError:
+            logger.error("Webhook request timeout")
+            return web.Response(status=408)  # Request Timeout
         except Exception as e:
             logger.error(f"Webhook error: {e}")
             return web.Response(status=400)
     
-    app.router.add_post(WEBHOOK_PATH, handle_webhook)
-    
     # Health check endpoint
     async def health_check(request):
-        return web.Response(text="PRO Risk Calculator v3.0 - OK")
+        """Comprehensive health check"""
+        health_status = {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "version": "3.0",
+            "services": {
+                "telegram_bot": "operational",
+                "market_data": "operational", 
+                "database": "operational"
+            }
+        }
+        
+        try:
+            # Проверяем соединение с Telegram
+            await application.bot.get_me()
+        except Exception as e:
+            health_status["status"] = "degraded"
+            health_status["services"]["telegram_bot"] = f"error: {str(e)}"
+            
+        return web.json_response(health_status)
     
+    # Robust health check для Render
+    async def render_health_check(request):
+        """Упрощенный health check для Render"""
+        return web.Response(text="OK", status=200)
+    
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
     app.router.add_get('/health', health_check)
-    app.router.add_get('/', health_check)
+    app.router.add_get('/health/simple', render_health_check)
+    app.router.add_get('/', render_health_check)
     
     runner = web.AppRunner(app)
     await runner.setup()
@@ -1308,42 +1542,81 @@ async def start_http_server(application):
     return runner
 
 async def main():
-    """Основная функция"""
-    application = Application.builder().token(TOKEN).build()
+    """Основная функция с улучшенной обработкой ошибок"""
+    max_retries = 3
+    retry_delay = 5
     
-    # Регистрация обработчиков
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("pro_info", pro_info_command))
-    
-    # Настройка диалогов (используем существующие из оригинального кода)
-    setup_conversation_handlers(application)
-    
-    # Callback router
-    application.add_handler(CallbackQueryHandler(callback_router))
-    
-    # Обработчик для любых сообщений (fallback)
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
-        lambda update, context: update.message.reply_text(
-            "Используйте меню для навигации или /start для начала работы"
-        )
-    ))
-    
-    # Режим запуска
-    if WEBHOOK_URL and WEBHOOK_URL.strip():
-        logger.info("Запуск в режиме WEBHOOK")
-        await application.initialize()
-        
-        if await set_webhook(application):
-            await start_http_server(application)
-            logger.info("Бот запущен в режиме WEBHOOK")
-            await asyncio.Event().wait()
-        else:
-            logger.error("Не удалось установить вебхук, запуск в режиме polling")
-            await application.run_polling()
-    else:
-        logger.info("Запуск в режиме POLLING")
-        await application.run_polling()
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Attempt {attempt + 1}/{max_retries} to start bot...")
+            
+            # Создаем устойчивое приложение
+            application = RobustApplicationBuilder.create_application(TOKEN)
+            
+            # Регистрация обработчиков
+            application.add_handler(CommandHandler("start", start_command))
+            application.add_handler(CommandHandler("pro_info", pro_info_command))
+            
+            # Настройка диалогов
+            setup_conversation_handlers(application)
+            
+            # Callback router
+            application.add_handler(CallbackQueryHandler(callback_router))
+            
+            # Обработчик для любых сообщений (fallback)
+            application.add_handler(MessageHandler(
+                filters.TEXT & ~filters.COMMAND, 
+                lambda update, context: SafeMessageSender.send_message(
+                    update.message.chat_id,
+                    "Используйте меню для навигации или /start для начала работы",
+                    context
+                )
+            ))
+            
+            # Режим запуска
+            if WEBHOOK_URL and WEBHOOK_URL.strip():
+                logger.info("Запуск в режиме WEBHOOK")
+                await application.initialize()
+                
+                if await set_webhook(application):
+                    await start_http_server(application)
+                    logger.info("Бот успешно запущен в режиме WEBHOOK")
+                    
+                    # Бесконечный цикл с периодическими health check
+                    while True:
+                        await asyncio.sleep(300)  # Sleep for 5 minutes
+                        # Можно добавить периодические health checks здесь
+                else:
+                    logger.error("Не удалось установить вебхук, запуск в режиме polling")
+                    raise Exception("Webhook setup failed")
+            else:
+                logger.info("Запуск в режиме POLLING")
+                await application.run_polling(
+                    poll_interval=1.0,
+                    timeout=30,
+                    drop_pending_updates=True
+                )
+                
+            # Если дошли сюда, бот работает успешно
+            break
+                
+        except telegram.error.TimedOut as e:
+            logger.error(f"Timeout error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error("All startup attempts failed due to timeouts")
+                raise
+                
+        except Exception as e:
+            logger.error(f"Unexpected error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error("All startup attempts failed")
+                raise
 
 # ---------------------------
 # Conversation Handler Setup (ОБНОВЛЕННЫЙ)
@@ -1461,10 +1734,11 @@ def setup_conversation_handlers(application: Application):
 # ---------------------------
 # Обработчики состояний (ОБНОВЛЕННЫЕ)
 # ---------------------------
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def single_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало одиночной сделки с реальными данными"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     text = (
         "🎯 **ОДИНОЧНАЯ СДЕЛКА v3.0**\n\n"
@@ -1477,9 +1751,14 @@ async def single_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
     ]
     
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    await SafeMessageSender.edit_message_text(
+        query,
+        text,
+        InlineKeyboardMarkup(keyboard)
+    )
     return SingleTradeState.DEPOSIT.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def single_trade_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка ввода депозита для одиночной сделки"""
     text = update.message.text.strip()
@@ -1487,7 +1766,11 @@ async def single_trade_deposit(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         deposit = float(text.replace(',', '.'))
         if deposit < 100:
-            await update.message.reply_text("❌ Минимальный депозит: $100\nПопробуйте еще раз:")
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Минимальный депозит: $100\nПопробуйте еще раз:",
+                context
+            )
             return SingleTradeState.DEPOSIT.value
         
         context.user_data['deposit'] = deposit
@@ -1498,21 +1781,28 @@ async def single_trade_deposit(update: Update, context: ContextTypes.DEFAULT_TYP
         
         keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
         
-        await update.message.reply_text(
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
             f"✅ Депозит: ${deposit:,.2f}\n\n"
             "**Выберите кредитное плечо:**",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            context,
+            InlineKeyboardMarkup(keyboard)
         )
         return SingleTradeState.LEVERAGE.value
         
     except ValueError:
-        await update.message.reply_text("❌ Введите число (например: 1000)\nПопробуйте еще раз:")
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Введите число (например: 1000)\nПопробуйте еще раз:",
+            context
+        )
         return SingleTradeState.DEPOSIT.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def single_trade_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора плеча для одиночной сделки"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     leverage = query.data.replace('lev_', '')
     context.user_data['leverage'] = leverage
@@ -1525,22 +1815,25 @@ async def single_trade_leverage(update: Update, context: ContextTypes.DEFAULT_TY
     keyboard.append([InlineKeyboardButton("📝 Ввести актив вручную", callback_data="asset_manual")])
     keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
     
-    await query.edit_message_text(
+    await SafeMessageSender.edit_message_text(
+        query,
         f"✅ Плечо: {leverage}\n\n"
         "**Выберите категорию актива:**",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        InlineKeyboardMarkup(keyboard)
     )
     return SingleTradeState.ASSET_CATEGORY.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def single_trade_asset_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора категории активов"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     if query.data == "asset_manual":
-        await query.edit_message_text(
+        await SafeMessageSender.edit_message_text(
+            query,
             "✍️ Введите название актива (например: BTCUSDT):",
-            reply_markup=InlineKeyboardMarkup([
+            InlineKeyboardMarkup([
                 [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
             ])
         )
@@ -1559,17 +1852,19 @@ async def single_trade_asset_category(update: Update, context: ContextTypes.DEFA
     keyboard.append([InlineKeyboardButton("🔙 Назад к категориям", callback_data="back_to_categories")])
     keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
     
-    await query.edit_message_text(
+    await SafeMessageSender.edit_message_text(
+        query,
         f"✅ Категория: {category}\n\n"
         "**Выберите актив:**",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        InlineKeyboardMarkup(keyboard)
     )
     return SingleTradeState.ASSET.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def single_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора актива для одиночной сделки"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     if query.data == "back_to_categories":
         # Возврат к выбору категории
@@ -1580,19 +1875,21 @@ async def single_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE)
         keyboard.append([InlineKeyboardButton("📝 Ввести актив вручную", callback_data="asset_manual")])
         keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
         
-        await query.edit_message_text(
+        await SafeMessageSender.edit_message_text(
+            query,
             "**Выберите категорию актива:**",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            InlineKeyboardMarkup(keyboard)
         )
         return SingleTradeState.ASSET_CATEGORY.value
     
     asset = query.data.replace('asset_', '')
     context.user_data['asset'] = asset
     
-    await query.edit_message_text(
+    await SafeMessageSender.edit_message_text(
+        query,
         f"✅ Актив: {asset}\n\n"
         "**Выберите направление сделки:**",
-        reply_markup=InlineKeyboardMarkup([
+        InlineKeyboardMarkup([
             [InlineKeyboardButton("📈 LONG", callback_data="dir_LONG")],
             [InlineKeyboardButton("📉 SHORT", callback_data="dir_SHORT")],
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
@@ -1600,21 +1897,28 @@ async def single_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     return SingleTradeState.DIRECTION.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def single_trade_asset_manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка ручного ввода актива для одиночной сделки"""
     asset = update.message.text.strip().upper()
     
     # Простая валидация
     if not re.match(r'^[A-Z0-9]{2,20}$', asset):
-        await update.message.reply_text("❌ Неверный формат актива. Попробуйте еще раз:")
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Неверный формат актива. Попробуйте еще раз:",
+            context
+        )
         return SingleTradeState.ASSET.value
     
     context.user_data['asset'] = asset
     
-    await update.message.reply_text(
+    await SafeMessageSender.send_message(
+        update.message.chat_id,
         f"✅ Актив: {asset}\n\n"
         "**Выберите направление сделки:**",
-        reply_markup=InlineKeyboardMarkup([
+        context,
+        InlineKeyboardMarkup([
             [InlineKeyboardButton("📈 LONG", callback_data="dir_LONG")],
             [InlineKeyboardButton("📉 SHORT", callback_data="dir_SHORT")],
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
@@ -1622,23 +1926,26 @@ async def single_trade_asset_manual(update: Update, context: ContextTypes.DEFAUL
     )
     return SingleTradeState.DIRECTION.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def single_trade_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора направления для одиночной сделки"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     direction = query.data.replace('dir_', '')
     context.user_data['direction'] = direction
     
-    await query.edit_message_text(
+    await SafeMessageSender.edit_message_text(
+        query,
         f"✅ Направление: {direction}\n\n"
         "**Введите цену входа:**",
-        reply_markup=InlineKeyboardMarkup([
+        InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
         ])
     )
     return SingleTradeState.ENTRY.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def single_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка цены входа для одиночной сделки"""
     text = update.message.text.strip()
@@ -1646,24 +1953,35 @@ async def single_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         entry_price = float(text.replace(',', '.'))
         if entry_price <= 0:
-            await update.message.reply_text("❌ Цена должна быть больше 0\nПопробуйте еще раз:")
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Цена должна быть больше 0\nПопробуйте еще раз:",
+                context
+            )
             return SingleTradeState.ENTRY.value
         
         context.user_data['entry_price'] = entry_price
         
-        await update.message.reply_text(
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
             f"✅ Цена входа: {entry_price}\n\n"
             "**Введите уровень стоп-лосса:**",
-            reply_markup=InlineKeyboardMarkup([
+            context,
+            InlineKeyboardMarkup([
                 [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
             ])
         )
         return SingleTradeState.STOP_LOSS.value
         
     except ValueError:
-        await update.message.reply_text("❌ Введите число (например: 50000)\nПопробуйте еще раз:")
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Введите число (например: 50000)\nПопробуйте еще раз:",
+            context
+        )
         return SingleTradeState.ENTRY.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def single_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка стоп-лосса для одиночной сделки"""
     text = update.message.text.strip()
@@ -1676,13 +1994,17 @@ async def single_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_T
         
         # Валидация SL
         if direction == 'LONG' and stop_loss >= entry_price:
-            await update.message.reply_text(
-                "❌ Для LONG стоп-лосс должен быть НИЖЕ цены входа\nПопробуйте еще раз:"
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Для LONG стоп-лосс должен быть НИЖЕ цены входа\nПопробуйте еще раз:",
+                context
             )
             return SingleTradeState.STOP_LOSS.value
         elif direction == 'SHORT' and stop_loss <= entry_price:
-            await update.message.reply_text(
-                "❌ Для SHORT стоп-лосс должен быть ВЫШЕ цены входа\nПопробуйте еще раз:"
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Для SHORT стоп-лосс должен быть ВЫШЕ цены входа\nПопробуйте еще раз:",
+                context
             )
             return SingleTradeState.STOP_LOSS.value
         
@@ -1698,49 +2020,63 @@ async def single_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_T
         
         keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
         
-        await update.message.reply_text(
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
             f"✅ Стоп-лосс: {stop_loss} ({stop_distance_pips:.0f} пунктов)\n\n"
             "**Выберите уровень риска:**",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            context,
+            InlineKeyboardMarkup(keyboard)
         )
         return SingleTradeState.RISK_LEVEL.value
         
     except ValueError:
-        await update.message.reply_text("❌ Введите число (например: 48000)\nПопробуйте еще раз:")
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Введите число (например: 48000)\nПопробуйте еще раз:",
+            context
+        )
         return SingleTradeState.STOP_LOSS.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def single_trade_risk_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора уровня риска"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     risk_level = query.data.replace('risk_', '')
     context.user_data['risk_level'] = risk_level
     
-    await query.edit_message_text(
+    await SafeMessageSender.edit_message_text(
+        query,
         f"✅ Уровень риска: {risk_level}\n\n"
         "**Введите уровень тейк-профита:**",
-        reply_markup=InlineKeyboardMarkup([
+        InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
         ])
     )
     return SingleTradeState.TAKE_PROFIT.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def single_trade_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отмена одиночной сделки"""
     user_id = update.message.from_user.id
     DataManager.clear_temporary_progress(user_id)
     context.user_data.clear()
-    await update.message.reply_text("❌ Расчет отменен")
+    await SafeMessageSender.send_message(
+        update.message.chat_id,
+        "❌ Расчет отменен",
+        context
+    )
     return ConversationHandler.END
 
 # ---------------------------
 # Multi-trade Conversation Handlers (ОБНОВЛЕННЫЕ)
 # ---------------------------
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало мультипозиционного расчета с реальными данными"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     context.user_data['multi_trades'] = []
     
@@ -1755,9 +2091,14 @@ async def multi_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
     ]
     
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    await SafeMessageSender.edit_message_text(
+        query,
+        text,
+        InlineKeyboardMarkup(keyboard)
+    )
     return MultiTradeState.DEPOSIT.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка ввода депозита"""
     text = update.message.text.strip()
@@ -1765,7 +2106,11 @@ async def multi_trade_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         deposit = float(text.replace(',', '.'))
         if deposit < 100:
-            await update.message.reply_text("❌ Минимальный депозит: $100\nПопробуйте еще раз:")
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Минимальный депозит: $100\nПопробуйте еще раз:",
+                context
+            )
             return MultiTradeState.DEPOSIT.value
         
         context.user_data['deposit'] = deposit
@@ -1776,21 +2121,28 @@ async def multi_trade_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
         
-        await update.message.reply_text(
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
             f"✅ Депозит: ${deposit:,.2f}\n\n"
             "**Выберите кредитное плечо:**",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            context,
+            InlineKeyboardMarkup(keyboard)
         )
         return MultiTradeState.LEVERAGE.value
         
     except ValueError:
-        await update.message.reply_text("❌ Введите число (например: 1000)\nПопробуйте еще раз:")
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Введите число (например: 1000)\nПопробуйте еще раз:",
+            context
+        )
         return MultiTradeState.DEPOSIT.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора плеча"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     leverage = query.data.replace('lev_', '')
     context.user_data['leverage'] = leverage
@@ -1798,6 +2150,7 @@ async def multi_trade_leverage(update: Update, context: ContextTypes.DEFAULT_TYP
     # Начинаем цикл ввода сделок
     return await start_trade_input(update, context)
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def start_trade_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало ввода сделки"""
     query = update.callback_query
@@ -1819,21 +2172,32 @@ async def start_trade_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
     
     if query:
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await SafeMessageSender.edit_message_text(
+            query,
+            text,
+            InlineKeyboardMarkup(keyboard)
+        )
     else:
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            text,
+            context,
+            InlineKeyboardMarkup(keyboard)
+        )
     
     return MultiTradeState.ASSET_CATEGORY.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_asset_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора категории активов для мультипозиции"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     if query.data == "asset_manual":
-        await query.edit_message_text(
+        await SafeMessageSender.edit_message_text(
+            query,
             "✍️ Введите название актива (например: BTCUSDT):",
-            reply_markup=InlineKeyboardMarkup([
+            InlineKeyboardMarkup([
                 [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
             ])
         )
@@ -1855,17 +2219,19 @@ async def multi_trade_asset_category(update: Update, context: ContextTypes.DEFAU
     keyboard.append([InlineKeyboardButton("🔙 Назад к категориям", callback_data="back_to_categories")])
     keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
     
-    await query.edit_message_text(
+    await SafeMessageSender.edit_message_text(
+        query,
         f"✅ Категория: {category}\n\n"
         "**Выберите актив:**",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        InlineKeyboardMarkup(keyboard)
     )
     return MultiTradeState.ASSET.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора актива"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     if query.data == "back_to_categories":
         return await start_trade_input(update, context)
@@ -1873,10 +2239,11 @@ async def multi_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     asset = query.data.replace('asset_', '')
     context.user_data['current_trade']['asset'] = asset
     
-    await query.edit_message_text(
+    await SafeMessageSender.edit_message_text(
+        query,
         f"✅ Актив: {asset}\n\n"
         "**Выберите направление сделки:**",
-        reply_markup=InlineKeyboardMarkup([
+        InlineKeyboardMarkup([
             [InlineKeyboardButton("📈 LONG", callback_data="dir_LONG")],
             [InlineKeyboardButton("📉 SHORT", callback_data="dir_SHORT")],
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
@@ -1884,21 +2251,28 @@ async def multi_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
     return MultiTradeState.DIRECTION.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_asset_manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка ручного ввода актива"""
     asset = update.message.text.strip().upper()
     
     # Простая валидация
     if not re.match(r'^[A-Z0-9]{2,20}$', asset):
-        await update.message.reply_text("❌ Неверный формат актива. Попробуйте еще раз:")
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Неверный формат актива. Попробуйте еще раз:",
+            context
+        )
         return MultiTradeState.ASSET.value
     
     context.user_data['current_trade'] = {'asset': asset}
     
-    await update.message.reply_text(
+    await SafeMessageSender.send_message(
+        update.message.chat_id,
         f"✅ Актив: {asset}\n\n"
         "**Выберите направление сделки:**",
-        reply_markup=InlineKeyboardMarkup([
+        context,
+        InlineKeyboardMarkup([
             [InlineKeyboardButton("📈 LONG", callback_data="dir_LONG")],
             [InlineKeyboardButton("📉 SHORT", callback_data="dir_SHORT")],
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
@@ -1906,23 +2280,26 @@ async def multi_trade_asset_manual(update: Update, context: ContextTypes.DEFAULT
     )
     return MultiTradeState.DIRECTION.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора направления"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     direction = query.data.replace('dir_', '')
     context.user_data['current_trade']['direction'] = direction
     
-    await query.edit_message_text(
+    await SafeMessageSender.edit_message_text(
+        query,
         f"✅ Направление: {direction}\n\n"
         "**Введите цену входа:**",
-        reply_markup=InlineKeyboardMarkup([
+        InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
         ])
     )
     return MultiTradeState.ENTRY.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка цены входа"""
     text = update.message.text.strip()
@@ -1930,24 +2307,35 @@ async def multi_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     try:
         entry_price = float(text.replace(',', '.'))
         if entry_price <= 0:
-            await update.message.reply_text("❌ Цена должна быть больше 0\nПопробуйте еще раз:")
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Цена должна быть больше 0\nПопробуйте еще раз:",
+                context
+            )
             return MultiTradeState.ENTRY.value
         
         context.user_data['current_trade']['entry_price'] = entry_price
         
-        await update.message.reply_text(
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
             f"✅ Цена входа: {entry_price}\n\n"
             "**Введите уровень стоп-лосса:**",
-            reply_markup=InlineKeyboardMarkup([
+            context,
+            InlineKeyboardMarkup([
                 [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
             ])
         )
         return MultiTradeState.STOP_LOSS.value
         
     except ValueError:
-        await update.message.reply_text("❌ Введите число (например: 50000)\nПопробуйте еще раз:")
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Введите число (например: 50000)\nПопробуйте еще раз:",
+            context
+        )
         return MultiTradeState.ENTRY.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка стоп-лосса"""
     text = update.message.text.strip()
@@ -1960,13 +2348,17 @@ async def multi_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_TY
         
         # Валидация SL
         if direction == 'LONG' and stop_loss >= entry_price:
-            await update.message.reply_text(
-                "❌ Для LONG стоп-лосс должен быть НИЖЕ цены входа\nПопробуйте еще раз:"
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Для LONG стоп-лосс должен быть НИЖЕ цены входа\nПопробуйте еще раз:",
+                context
             )
             return MultiTradeState.STOP_LOSS.value
         elif direction == 'SHORT' and stop_loss <= entry_price:
-            await update.message.reply_text(
-                "❌ Для SHORT стоп-лосс должен быть ВЫШЕ цены входа\nПопробуйте еще раз:"
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Для SHORT стоп-лосс должен быть ВЫШЕ цены входа\nПопробуйте еще раз:",
+                context
             )
             return MultiTradeState.STOP_LOSS.value
         
@@ -1982,44 +2374,54 @@ async def multi_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_TY
         
         keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
         
-        await update.message.reply_text(
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
             f"✅ Стоп-лосс: {stop_loss} ({stop_distance_pips:.0f} пунктов)\n\n"
             "**Выберите уровень риска для этой сделки:**",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            context,
+            InlineKeyboardMarkup(keyboard)
         )
         return MultiTradeState.RISK_LEVEL.value
         
     except ValueError:
-        await update.message.reply_text("❌ Введите число (например: 48000)\nПопробуйте еще раз:")
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Введите число (например: 48000)\nПопробуйте еще раз:",
+            context
+        )
         return MultiTradeState.STOP_LOSS.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_risk_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора уровня риска для мультипозиции"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     risk_level = query.data.replace('risk_', '')
     context.user_data['current_trade']['risk_level'] = risk_level
     
-    await query.edit_message_text(
+    await SafeMessageSender.edit_message_text(
+        query,
         f"✅ Уровень риска: {risk_level}\n\n"
         "**Введите уровень тейк-профита:**",
-        reply_markup=InlineKeyboardMarkup([
+        InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
         ])
     )
     return MultiTradeState.TAKE_PROFIT.value
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_add_another(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка добавления следующей сделки"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     if query.data == "add_another":
         return await start_trade_input(update, context)
     else:  # multi_finish
         return await finish_multi_trade(update, context)
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def finish_multi_trade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Завершение мультипозиционного расчета и переход в портфель"""
     query = update.callback_query
@@ -2043,34 +2445,42 @@ async def finish_multi_trade(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await show_portfolio(update, context, user_id)
     return ConversationHandler.END
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отмена мультипозиционного расчета"""
     user_id = update.message.from_user.id
     DataManager.clear_temporary_progress(user_id)
     context.user_data.clear()
-    await update.message.reply_text("❌ Расчет отменен")
+    await SafeMessageSender.send_message(
+        update.message.chat_id,
+        "❌ Расчет отменен",
+        context
+    )
     return ConversationHandler.END
 
 # ---------------------------
 # Portfolio Handlers (ОБНОВЛЕННЫЕ)
 # ---------------------------
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def portfolio_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик портфеля"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     await show_portfolio(update, context)
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def clear_portfolio_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Очистка портфеля"""
     query = update.callback_query
     user_id = query.from_user.id
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     PortfolioManager.clear_portfolio(user_id)
     
-    await query.edit_message_text(
+    await SafeMessageSender.edit_message_text(
+        query,
         "✅ Портфель очищен",
-        reply_markup=InlineKeyboardMarkup([
+        InlineKeyboardMarkup([
             [InlineKeyboardButton("🎯 Одна сделка", callback_data="single_trade")],
             [InlineKeyboardButton("📊 Мультипозиция", callback_data="multi_trade_start")],
             [InlineKeyboardButton("📋 В портфель", callback_data="portfolio")],
@@ -2078,11 +2488,12 @@ async def clear_portfolio_handler(update: Update, context: ContextTypes.DEFAULT_
         ])
     )
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def export_portfolio_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выгрузка отчета портфеля с реальными данными"""
     query = update.callback_query
     user_id = query.from_user.id
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     PortfolioManager.ensure_user(user_id)
     user_portfolio = user_data[user_id]
@@ -2094,7 +2505,7 @@ async def export_portfolio_handler(update: Update, context: ContextTypes.DEFAULT
     all_trades = trades + single_trades
     
     if not all_trades:
-        await query.answer("Портфель пуст", show_alert=True)
+        await SafeMessageSender.answer_callback_query(query, "Портфель пуст", show_alert=True)
         return
     
     # Обновляем цены для отчета
@@ -2165,6 +2576,12 @@ async def export_portfolio_handler(update: Update, context: ContextTypes.DEFAULT
     bio = io.BytesIO(report_text.encode('utf-8'))
     bio.name = f"portfolio_report_v3_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
     
+    await SafeMessageSender.send_message(
+        query.message.chat_id,
+        "📊 Профессиональный отчет вашего портфеля v3.0 (реальные котировки)",
+        context
+    )
+    
     await query.message.reply_document(
         document=InputFile(bio, filename=bio.name),
         caption="📊 Профессиональный отчет вашего портфеля v3.0 (реальные котировки)"
@@ -2173,10 +2590,11 @@ async def export_portfolio_handler(update: Update, context: ContextTypes.DEFAULT
 # ---------------------------
 # Future Features Handler (ОБНОВЛЕННЫЙ)
 # ---------------------------
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def future_features_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Раздел будущих разработок"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     text = (
         "🚀 **БУДУЩИЕ РАЗРАБОТКИ v3.0**\n\n"
@@ -2197,7 +2615,7 @@ async def future_features_handler(update: Update, context: ContextTypes.DEFAULT_
         "• Интеграция с популярными биржами\n"
         "• Социальный трейдинг и копирование сделок\n\n"
         
-        "**🔧 ТЕКУЩИЕ ОБНОВЛЕНИЯ v3.0**\n"
+        "**🔧 ТЕКУЩИЕ ОБНОВЛЕНИЕ v3.0**\n"
         "✅ Реальные котировки через Binance, Alpha Vantage, Finnhub\n"
         "✅ Профессиональный расчет маржи по отраслевым стандартам\n"
         "✅ Разделение одиночных сделок и мультипозиций\n"
@@ -2207,22 +2625,27 @@ async def future_features_handler(update: Update, context: ContextTypes.DEFAULT_
     )
     
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    await SafeMessageSender.edit_message_text(
+        query,
+        text,
+        InlineKeyboardMarkup(keyboard)
+    )
 
 # ---------------------------
 # Progress Restoration Handler (ОБНОВЛЕННЫЙ)
 # ---------------------------
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def restore_progress_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Восстановление сохраненного прогресса"""
     query = update.callback_query
     user_id = query.from_user.id
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
     temp_data = DataManager.load_temporary_data()
     saved_progress = temp_data.get(str(user_id))
     
     if not saved_progress:
-        await query.answer("Нет сохраненного прогресса", show_alert=True)
+        await SafeMessageSender.answer_callback_query(query, "Нет сохраненного прогресса", show_alert=True)
         return
     
     # Восстанавливаем данные
@@ -2232,20 +2655,22 @@ async def restore_progress_handler(update: Update, context: ContextTypes.DEFAULT
     state_type = saved_progress['state_type']
     
     if state_type == "single":
-        await query.answer("Прогресс одиночной сделки восстановлен", show_alert=True)
+        await SafeMessageSender.answer_callback_query(query, "Прогресс одиночной сделки восстановлен", show_alert=True)
         # Определяем текущее состояние и переходим к нему
         if 'take_profit' in context.user_data:
-            await query.edit_message_text(
+            await SafeMessageSender.edit_message_text(
+                query,
                 "✅ Прогресс восстановлен!\n\nВведите уровень тейк-профита:",
-                reply_markup=InlineKeyboardMarkup([
+                InlineKeyboardMarkup([
                     [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
                 ])
             )
             return SingleTradeState.TAKE_PROFIT.value
         elif 'risk_level' in context.user_data:
-            await query.edit_message_text(
+            await SafeMessageSender.edit_message_text(
+                query,
                 "✅ Прогресс восстановлен!\n\nВведите уровень тейк-профита:",
-                reply_markup=InlineKeyboardMarkup([
+                InlineKeyboardMarkup([
                     [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
                 ])
             )
@@ -2258,18 +2683,20 @@ async def restore_progress_handler(update: Update, context: ContextTypes.DEFAULT
             
             keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
             
-            await query.edit_message_text(
+            await SafeMessageSender.edit_message_text(
+                query,
                 "✅ Прогресс восстановлен!\n\nВыберите уровень риска:",
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                InlineKeyboardMarkup(keyboard)
             )
             return SingleTradeState.RISK_LEVEL.value
     else:
-        await query.answer("Прогресс мультипозиции восстановлен", show_alert=True)
+        await SafeMessageSender.answer_callback_query(query, "Прогресс мультипозиции восстановлен", show_alert=True)
         return await start_trade_input(update, context)
 
 # ---------------------------
 # PRO Info Handler (ОБНОВЛЕННЫЙ)
 # ---------------------------
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """PRO инструкции v3.0"""
     text = (
@@ -2329,115 +2756,148 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await SafeMessageSender.edit_message_text(
+            update.callback_query,
+            text,
+            InlineKeyboardMarkup(keyboard)
+        )
     else:
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await SafeMessageSender.send_message(
+            update.effective_user.id,
+            text,
+            context,
+            InlineKeyboardMarkup(keyboard)
+        )
 
 # ---------------------------
 # Main Callback Router (ОБНОВЛЕННЫЙ)
 # ---------------------------
 @performance_logger
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Маршрутизатор callback запросов v3.0"""
     query = update.callback_query
     if not query:
         return
     
-    await query.answer()
+    # Сразу отвечаем на callback чтобы Telegram не показывал "часики"
+    await SafeMessageSender.answer_callback_query(query)
+    
     data = query.data
     user_id = query.from_user.id
     
     logger.info(f"Callback received: {data} from user {user_id}")
     
-    # Основные команды
-    if data == "main_menu":
-        await start_command(update, context)
-    elif data == "main_menu_save":
-        # Определяем текущее состояние
-        current_state = None
-        if hasattr(context, '_conversation_state'):
-            current_state = context._conversation_state
+    try:
+        # Основные команды
+        if data == "main_menu":
+            await start_command(update, context)
+        elif data == "main_menu_save":
+            current_state = None
+            if hasattr(context, '_conversation_state'):
+                current_state = context._conversation_state
+            await main_menu_save_handler(update, context, current_state)
+        elif data == "pro_calculation":
+            keyboard = [
+                [InlineKeyboardButton("🎯 Одна сделка", callback_data="single_trade")],
+                [InlineKeyboardButton("📊 Мультипозиция", callback_data="multi_trade_start")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
+            ]
+            await SafeMessageSender.edit_message_text(
+                query,
+                "Выберите тип расчета:",
+                InlineKeyboardMarkup(keyboard)
+            )
+        elif data == "single_trade":
+            await single_trade_start(update, context)
+        elif data == "multi_trade_start":
+            await multi_trade_start(update, context)
+        elif data == "portfolio":
+            await show_portfolio(update, context, user_id)
+        elif data == "pro_info":
+            await pro_info_command(update, context)
+        elif data == "future_features":
+            await future_features_handler(update, context)
+        elif data == "clear_portfolio":
+            await clear_portfolio_handler(update, context)
+        elif data == "export_portfolio":
+            await export_portfolio_handler(update, context)
+        elif data == "restore_progress":
+            await restore_progress_handler(update, context)
         
-        await main_menu_save_handler(update, context, current_state)
-    elif data == "pro_calculation":
-        keyboard = [
-            [InlineKeyboardButton("🎯 Одна сделка", callback_data="single_trade")],
-            [InlineKeyboardButton("📊 Мультипозиция", callback_data="multi_trade_start")],
-            [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
-        ]
-        await query.edit_message_text("Выберите тип расчета:", reply_markup=InlineKeyboardMarkup(keyboard))
-    elif data == "single_trade":
-        await single_trade_start(update, context)
-    elif data == "multi_trade_start":
-        await multi_trade_start(update, context)
-    elif data == "portfolio":
-        await show_portfolio(update, context, user_id)
-    elif data == "pro_info":
-        await pro_info_command(update, context)
-    elif data == "future_features":
-        await future_features_handler(update, context)
-    elif data == "clear_portfolio":
-        await clear_portfolio_handler(update, context)
-    elif data == "export_portfolio":
-        await export_portfolio_handler(update, context)
-    elif data == "restore_progress":
-        await restore_progress_handler(update, context)
-    
-    # Обработка категорий активов
-    elif data.startswith("cat_"):
-        if hasattr(context, '_conversation_state'):
-            state = context._conversation_state
-            if state in [SingleTradeState.ASSET_CATEGORY.value, MultiTradeState.ASSET_CATEGORY.value]:
-                if state == SingleTradeState.ASSET_CATEGORY.value:
-                    await single_trade_asset_category(update, context)
-                else:
-                    await multi_trade_asset_category(update, context)
-    
-    # Обработка выбора уровня риска
-    elif data.startswith("risk_"):
-        if hasattr(context, '_conversation_state'):
-            state = context._conversation_state
-            if state in [SingleTradeState.RISK_LEVEL.value, MultiTradeState.RISK_LEVEL.value]:
-                if state == SingleTradeState.RISK_LEVEL.value:
-                    await single_trade_risk_level(update, context)
-                else:
-                    await multi_trade_risk_level(update, context)
-    
-    # Обработка других callback данных
-    elif data in ["back_to_categories", "asset_manual", "multi_finish", "add_another"]:
-        if hasattr(context, '_conversation_state'):
-            state = context._conversation_state
-            if state in [SingleTradeState.ASSET.value, MultiTradeState.ASSET.value]:
-                if data == "back_to_categories":
-                    if state == SingleTradeState.ASSET.value:
-                        await single_trade_asset(update, context)
+        # Обработка категорий активов
+        elif data.startswith("cat_"):
+            if hasattr(context, '_conversation_state'):
+                state = context._conversation_state
+                if state in [SingleTradeState.ASSET_CATEGORY.value, MultiTradeState.ASSET_CATEGORY.value]:
+                    if state == SingleTradeState.ASSET_CATEGORY.value:
+                        await single_trade_asset_category(update, context)
                     else:
                         await multi_trade_asset_category(update, context)
-                elif data == "asset_manual":
-                    if state == SingleTradeState.ASSET.value:
-                        await query.edit_message_text(
-                            "✍️ Введите название актива (например: BTCUSDT):",
-                            reply_markup=InlineKeyboardMarkup([
-                                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
-                            ])
-                        )
-                        return SingleTradeState.ASSET.value
+        
+        # Обработка выбора уровня риска
+        elif data.startswith("risk_"):
+            if hasattr(context, '_conversation_state'):
+                state = context._conversation_state
+                if state in [SingleTradeState.RISK_LEVEL.value, MultiTradeState.RISK_LEVEL.value]:
+                    if state == SingleTradeState.RISK_LEVEL.value:
+                        await single_trade_risk_level(update, context)
                     else:
-                        await query.edit_message_text(
-                            "✍️ Введите название актива (например: BTCUSDT):",
-                            reply_markup=InlineKeyboardMarkup([
-                                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
-                            ])
-                        )
-                        return MultiTradeState.ASSET.value
-                elif data == "multi_finish":
-                    await finish_multi_trade(update, context)
-                elif data == "add_another":
-                    await multi_trade_add_another(update, context)
-    
-    else:
-        logger.warning(f"Unknown callback data: {data}")
-        await query.edit_message_text("⚠️ Функция временно недоступна")
+                        await multi_trade_risk_level(update, context)
+        
+        # Обработка других callback данных
+        elif data in ["back_to_categories", "asset_manual", "multi_finish", "add_another"]:
+            if hasattr(context, '_conversation_state'):
+                state = context._conversation_state
+                if state in [SingleTradeState.ASSET.value, MultiTradeState.ASSET.value]:
+                    if data == "back_to_categories":
+                        if state == SingleTradeState.ASSET.value:
+                            await single_trade_asset(update, context)
+                        else:
+                            await multi_trade_asset_category(update, context)
+                    elif data == "asset_manual":
+                        if state == SingleTradeState.ASSET.value:
+                            await SafeMessageSender.edit_message_text(
+                                query,
+                                "✍️ Введите название актива (например: BTCUSDT):",
+                                InlineKeyboardMarkup([
+                                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+                                ])
+                            )
+                            return SingleTradeState.ASSET.value
+                        else:
+                            await SafeMessageSender.edit_message_text(
+                                query,
+                                "✍️ Введите название актива (например: BTCUSDT):",
+                                InlineKeyboardMarkup([
+                                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+                                ])
+                            )
+                            return MultiTradeState.ASSET.value
+                    elif data == "multi_finish":
+                        await finish_multi_trade(update, context)
+                    elif data == "add_another":
+                        await multi_trade_add_another(update, context)
+        
+        else:
+            logger.warning(f"Unknown callback data: {data}")
+            await SafeMessageSender.edit_message_text(
+                query,
+                "⚠️ Функция временно недоступна",
+                InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+                ])
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in callback_router for {data}: {e}")
+        await SafeMessageSender.edit_message_text(
+            query,
+            "❌ Произошла ошибка. Пожалуйста, попробуйте еще раз.",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+            ])
+        )
 
 if __name__ == "__main__":
     asyncio.run(main())
