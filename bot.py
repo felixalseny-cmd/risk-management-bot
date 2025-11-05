@@ -154,11 +154,11 @@ class SafeMessageSender:
     @staticmethod
     @retry_on_timeout(max_retries=2, delay=1.0)
     async def edit_message_text(
-        query: CallbackQuery,
-        text: str,
-        reply_markup: InlineKeyboardMarkup = None,
-        parse_mode: str = 'Markdown'
-    ) -> bool:
+    query: 'CallbackQuery',  # Строковая аннотация - отложенная ссылка
+    text: str,
+    reply_markup: InlineKeyboardMarkup = None,
+    parse_mode: str = 'Markdown'
+) -> bool:
         """Безопасное редактирование сообщения"""
         try:
             await query.edit_message_text(
