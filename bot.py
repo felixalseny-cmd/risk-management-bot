@@ -90,7 +90,7 @@ VOLATILITY_DATA = {
     'OIL': 35.2, 'NAS100': 18.5
 }
 
-# Размеры контрактов и стоимость пункта
+# Размеры контрактов
 CONTRACT_SIZES = {
     'BTCUSDT': 1, 'ETHUSDT': 1, 'XRPUSDT': 1, 'LTCUSDT': 1, 'BCHUSDT': 1,
     'ADAUSDT': 1, 'DOTUSDT': 1, 'AAPL': 100, 'TSLA': 100, 'GOOGL': 100,
@@ -107,7 +107,10 @@ PIP_VALUES = {
     'EURUSD': 10.0, 'GBPUSD': 10.0, 'USDJPY': 9.09, 'USDCHF': 10.0,
     'AUDUSD': 10.0, 'USDCAD': 10.0, 'NZDUSD': 10.0, 'XAUUSD': 10.0,
     'XAGUSD': 50.0, 'OIL': 10.0, 'NAS100': 1.0, 'SPX500': 0.5,
-    'DJ30': 1.0, 'FTSE100': 1.0, 'DAX40': 0.25
+    'DJ30': 1.0, 'FTSE100': 1.0, 'DAX40': 0.25, 'BTCUSDT': 1.0,
+    'ETHUSDT': 1.0, 'XRPUSDT': 1.0, 'LTCUSDT': 1.0, 'BCHUSDT': 1.0,
+    'ADAUSDT': 1.0, 'DOTUSDT': 1.0, 'AAPL': 1.0, 'TSLA': 1.0,
+    'GOOGL': 1.0, 'MSFT': 1.0, 'AMZN': 1.0, 'META': 1.0, 'NFLX': 1.0
 }
 
 # ---------------------------
@@ -231,14 +234,32 @@ class PortfolioManager:
             DataManager.save_data(user_data)
 
 # ---------------------------
-# Risk Calculator - ИСПРАВЛЕННЫЙ РАСЧЕТ
+# Risk Calculator - ПОЛНОСТЬЮ ПЕРЕРАБОТАННЫЙ РАСЧЕТ
 # ---------------------------
 class RiskCalculator:
     @staticmethod
+    def calculate_pip_distance(entry: float, stop_loss: float, direction: str, asset: str) -> float:
+        """Расчет дистанции в пунктах между ценой входа и стоп-лоссом"""
+        if direction.upper() == 'LONG':
+            distance = entry - stop_loss
+        else:  # SHORT
+            distance = stop_loss - entry
+        
+        # Для акций и индексов расстояние в пунктах
+        if asset in ['AAPL', 'TSLA', 'GOOGL', 'MSFT', 'AMZN', 'META', 'NFLX']:
+            return abs(distance)
+        # Для криптовалют - в пунктах (обычно 2 знака после запятой)
+        elif asset in ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'LTCUSDT', 'BCHUSDT', 'ADAUSDT', 'DOTUSDT']:
+            return abs(distance)
+        # Для Forex - в пипсах (4 знака после запятой)
+        else:
+            return abs(distance) * 10000  # Конвертация в пипсы
+
+    @staticmethod
     def calculate_margin_metrics(trade: Dict, deposit: float, leverage: str, risk_level: str) -> Dict:
         """
-        ИСПРАВЛЕННЫЙ ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ МАРЖИ И ЛОТОВ
-        Теперь объем рассчитывается ИСКЛЮЧИТЕЛЬНО из суммы риска, а не из депозита
+        ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ УПРАВЛЕНИЯ РИСКАМИ
+        Исправленная методология на основе реального риск-менеджмента
         """
         try:
             entry = trade['entry_price']
@@ -248,17 +269,13 @@ class RiskCalculator:
             asset = trade['asset']
             
             # Расчет дистанции стоп-лосса в пунктах
-            if direction.upper() == 'LONG':
-                stop_distance_pips = entry - stop_loss
-                profit_distance_pips = take_profit - entry
-            else:  # SHORT
-                stop_distance_pips = stop_loss - entry
-                profit_distance_pips = entry - take_profit
+            stop_distance_pips = RiskCalculator.calculate_pip_distance(entry, stop_loss, direction, asset)
+            profit_distance_pips = RiskCalculator.calculate_pip_distance(entry, take_profit, direction, asset)
             
             # Получаем стоимость пункта для актива
             pip_value = PIP_VALUES.get(asset, 10.0)
             
-            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Расчет суммы риска от депозита
+            # Расчет суммы риска от депозита
             risk_percent = float(risk_level.strip('%'))
             risk_amount = deposit * (risk_percent / 100)  # Например: 2% от $1000 = $20
             
@@ -270,28 +287,19 @@ class RiskCalculator:
             else:
                 volume_lots = 0
             
-            # Расчет требуемой маржи
+            # Расчет требуемой маржи с учетом кредитного плеча
             lev_value = int(leverage.split(':')[1])
             contract_size = CONTRACT_SIZES.get(asset, 1)
             
-            # Required Margin = (Volume × Contract Size) / Leverage
+            # Правильный расчет маржи: (Объем × Размер контракта) / Плечо
             required_margin = (volume_lots * contract_size) / lev_value
             required_margin = round(required_margin, 2)
             
-            # Проверка на достаточность депозита для маржи
-            if required_margin > deposit:
-                # Если маржи не хватает, уменьшаем объем до максимально возможного
-                volume_lots = (deposit * lev_value) / contract_size
-                volume_lots = round(volume_lots, 2)
-                required_margin = deposit
-                # Пересчет risk_amount на основе нового объема
-                risk_amount = volume_lots * stop_distance_pips * pip_value
-                risk_percent = (risk_amount / deposit) * 100  # Пересчитываем фактический риск
-            
-            # Свободная маржа и уровень маржи
+            # Расчет свободной маржи
             free_margin = deposit - required_margin
             free_margin = round(free_margin, 2)
             
+            # Расчет уровня маржи (Margin Level)
             margin_level = (deposit / required_margin) * 100 if required_margin > 0 else 0
             margin_level = round(margin_level, 1)
             
@@ -302,6 +310,10 @@ class RiskCalculator:
             # Risk/Reward ratio
             rr_ratio = potential_profit / risk_amount if risk_amount > 0 else 0
             rr_ratio = round(rr_ratio, 2)
+            
+            # Дополнительные метрики риск-менеджмента
+            risk_per_trade_percent = (risk_amount / deposit) * 100
+            margin_usage_percent = (required_margin / deposit) * 100
             
             return {
                 'volume_lots': volume_lots,
@@ -316,7 +328,10 @@ class RiskCalculator:
                 'profit_distance_pips': profit_distance_pips,
                 'pip_value': pip_value,
                 'contract_size': contract_size,
-                'deposit': deposit  # Добавляем депозит для прозрачности
+                'deposit': deposit,
+                'leverage': leverage,
+                'risk_per_trade_percent': risk_per_trade_percent,
+                'margin_usage_percent': margin_usage_percent
             }
         except Exception as e:
             logger.error("Ошибка расчета маржи: %s", e)
@@ -353,12 +368,16 @@ class PortfolioAnalyzer:
         # Уровень маржи портфеля
         portfolio_margin_level = (deposit / total_margin) * 100 if total_margin > 0 else 0
         
+        # Общее использование маржи
+        total_margin_usage = (total_margin / deposit) * 100 if deposit > 0 else 0
+        
         return {
             'total_risk_usd': total_risk,
             'total_risk_percent': (total_risk / deposit) * 100 if deposit > 0 else 0,
             'total_profit': total_profit,
             'total_margin': total_margin,
             'portfolio_margin_level': portfolio_margin_level,
+            'total_margin_usage': total_margin_usage,
             'avg_rr_ratio': avg_rr,
             'portfolio_volatility': portfolio_volatility,
             'long_positions': long_count,
@@ -390,6 +409,13 @@ class PortfolioAnalyzer:
             recommendations.append(
                 "🟡 НИЗКИЙ УРОВЕНЬ МАРЖИ: Рассмотрите пополнение счета "
                 "для безопасности позиций."
+            )
+        
+        # Проверка использования маржи
+        if metrics.get('total_margin_usage', 0) > 50:
+            recommendations.append(
+                f"🟡 ВЫСОКОЕ ИСПОЛЬЗОВАНИЕ МАРЖИ: {metrics['total_margin_usage']:.1f}%. "
+                "Оставьте свободную маржу для непредвиденных ситуаций."
             )
         
         # Проверка Risk/Reward
@@ -504,8 +530,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 Привет, {user.first_name}!\n\n"
         "🤖 **PRO Калькулятор Управления Рисками v2.0**\n\n"
         "**МОИ ВОЗМОЖНОСТИ:**\n"
-        "• 📊 ПРОФЕССИОНАЛЬНЫЙ расчет позиций на основе РИСКА (а не депозита)\n"
-        "• 🎯 Контроль уровней риска (2%-25%)\n"
+        "• 📊 ПРОФЕССИОНАЛЬНЫЙ расчет позиций на основе риск-менеджмента\n"
+        "• 🎯 Контроль уровней риска (2%-25% от депозита)\n"
         "• 💼 Мультипозиционный анализ портфеля\n"
         "• 💡 Умные рекомендации и аналитика\n"
         "• 🛡 Защита от маржин-колла через правильный расчет объема\n\n"
@@ -542,13 +568,12 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         "**🎯 ПРАВИЛЬНОЕ УПРАВЛЕНИЕ РИСКАМИ**\n\n"
         
-        "**🔄 ИСПРАВЛЕННАЯ МЕТОДОЛОГИЯ РАСЧЕТА:**\n"
+        "**МЕТОДОЛОГИЯ РАСЧЕТА:**\n"
+        "• Риск на сделку = % от депозита (например: 2% от $1000 = $20)\n"
         "• Объем позиции рассчитывается ИСКЛЮЧИТЕЛЬНО из суммы риска\n"
-        "• Риск = % от депозита (например: 2% от $1000 = $20)\n"
-        "• Объем = Риск / (Дистанция SL в пунктах × Стоимость пункта)\n"
         "• Это защищает от маржин-колла и обеспечивает профессиональное управление капиталом\n\n"
         
-        "**📊 КЛЮЧЕВЫЕ ПРИНЦИПИ ДЛЯ ПРОФЕССИОНАЛОВ:**\n\n"
+        "**📊 КЛЮЧЕВЫЕ ПРИНЦИПЫ ДЛЯ ПРОФЕССИОНАЛОВ:**\n\n"
         
         "**1. УПРАВЛЕНИЕ РАЗМЕРОМ ПОЗИЦИИ НА ОСНОВЕ РИСКА**\n"
         "• Всегда определяйте риск ДО входа в сделку\n"
@@ -563,13 +588,20 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 25% - Максимальный: Только для уверенных сделок\n\n"
         
         "**3. ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ МАРЖИ**\n"
-        "• Volume = Risk Amount / (Stop Distance × Pip Value)\n"
-        "• Required Margin = (Volume × Contract Size) / Leverage\n"
         "• Всегда следите за уровнем маржи (>200%)\n"
-        "• Оставляйте свободную маржу для маневра\n\n"
+        "• Оставляйте свободную маржу для маневра\n"
+        "• Не используйте более 50% депозита под маржу\n\n"
         
         "**🛡 ЗАЩИТА ОТ МАРЖИН-КОЛЛА:**\n"
         "Бот автоматически проверяет достаточность маржи и при необходимости уменьшает объем позиции, сохраняя ваш заданный уровень риска.\n\n"
+        
+        "**💡 КАК ИСПОЛЬЗОВАТЬ БОТА:**\n"
+        "1. Установите размер депозита\n"
+        "2. Выберите кредитное плечо\n"
+        "3. Выберите актив и направление сделки\n"
+        "4. Укажите цену входа, стоп-лосс и тейк-профит\n"
+        "5. Выберите уровень риска\n"
+        "6. Получите профессиональный расчет\n\n"
         
         "Разработчик: @fxfeelgood"
     )
@@ -797,6 +829,7 @@ async def single_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_T
         stop_loss = float(text.replace(',', '.'))
         entry_price = context.user_data['entry_price']
         direction = context.user_data['direction']
+        asset = context.user_data['asset']
         
         # Валидация SL
         if direction == 'LONG' and stop_loss >= entry_price:
@@ -812,6 +845,9 @@ async def single_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_T
         
         context.user_data['stop_loss'] = stop_loss
         
+        # Расчет дистанции в пунктах для информации
+        stop_distance_pips = RiskCalculator.calculate_pip_distance(entry_price, stop_loss, direction, asset)
+        
         # Переход к выбору уровня риска
         keyboard = []
         for risk_level in RISK_LEVELS:
@@ -820,7 +856,7 @@ async def single_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_T
         keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
         
         await update.message.reply_text(
-            f"✅ Стоп-лосс: {stop_loss}\n\n"
+            f"✅ Стоп-лосс: {stop_loss} ({stop_distance_pips:.0f} пунктов)\n\n"
             "**Выберите уровень риска:**",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -855,6 +891,7 @@ async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT
         take_profit = float(text.replace(',', '.'))
         entry_price = context.user_data['entry_price']
         direction = context.user_data['direction']
+        asset = context.user_data['asset']
         
         # Валидация TP
         if direction == 'LONG' and take_profit <= entry_price:
@@ -898,9 +935,10 @@ async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT
             f"**📊 ПАРАМЕТРЫ СДЕЛКИ:**\n"
             f"• Актив: {trade_data['asset']}\n"
             f"• Направление: {trade_data['direction']}\n"
+            f"• Кредитное плечо: {leverage}\n"
             f"• Вход: {trade_data['entry_price']}\n"
-            f"• Стоп-лосс: {trade_data['stop_loss']}\n"
-            f"• Тейк-профит: {trade_data['take_profit']}\n"
+            f"• Стоп-лосс: {trade_data['stop_loss']} ({metrics['stop_distance_pips']:.0f} пунктов)\n"
+            f"• Тейк-профит: {trade_data['take_profit']} ({metrics['profit_distance_pips']:.0f} пунктов)\n"
             f"• Уровень риска: {trade_data['risk_level']}\n\n"
             
             f"**💰 ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ (НА ОСНОВЕ РИСКА):**\n"
@@ -910,6 +948,7 @@ async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT
             f"• Требуемая маржа: ${metrics['required_margin']:.2f}\n"
             f"• Свободная маржа: ${metrics['free_margin']:.2f}\n"
             f"• Уровень маржи: {metrics['margin_level']:.1f}%\n"
+            f"• Использование маржи: {metrics['margin_usage_percent']:.1f}%\n"
             f"• Потенциальная прибыль: ${metrics['potential_profit']:.2f}\n"
             f"• Соотношение R/R: {metrics['rr_ratio']:.2f}\n\n"
             
@@ -920,6 +959,8 @@ async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT
             text += "🔴 ВЫСОКИЙ РИСК! Превышен порог 10%. Уменьшите объем позиции.\n\n"
         elif metrics['margin_level'] < 100:
             text += "🔴 КРИТИЧЕСКИЙ УРОВЕНЬ МАРЖИ! Пополните счет.\n\n"
+        elif metrics['margin_usage_percent'] > 50:
+            text += "🟡 ВЫСОКОЕ ИСПОЛЬЗОВАНИЕ МАРЖИ! Оставьте запас для других сделок.\n\n"
         elif metrics['rr_ratio'] < 1:
             text += "🟡 Соотношение R/R меньше 1! Пересмотрите уровни TP/SL.\n\n"
         else:
@@ -1170,6 +1211,7 @@ async def multi_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_TY
         stop_loss = float(text.replace(',', '.'))
         entry_price = context.user_data['current_trade']['entry_price']
         direction = context.user_data['current_trade']['direction']
+        asset = context.user_data['current_trade']['asset']
         
         # Валидация SL
         if direction == 'LONG' and stop_loss >= entry_price:
@@ -1185,6 +1227,9 @@ async def multi_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_TY
         
         context.user_data['current_trade']['stop_loss'] = stop_loss
         
+        # Расчет дистанции в пунктах для информации
+        stop_distance_pips = RiskCalculator.calculate_pip_distance(entry_price, stop_loss, direction, asset)
+        
         # Переход к выбору уровня риска
         keyboard = []
         for risk_level in RISK_LEVELS:
@@ -1193,7 +1238,7 @@ async def multi_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_TY
         keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
         
         await update.message.reply_text(
-            f"✅ Стоп-лосс: {stop_loss}\n\n"
+            f"✅ Стоп-лосс: {stop_loss} ({stop_distance_pips:.0f} пунктов)\n\n"
             "**Выберите уровень риска для этой сделки:**",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -1228,6 +1273,7 @@ async def multi_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_
         take_profit = float(text.replace(',', '.'))
         entry_price = context.user_data['current_trade']['entry_price']
         direction = context.user_data['current_trade']['direction']
+        asset = context.user_data['current_trade']['asset']
         
         # Валидация TP
         if direction == 'LONG' and take_profit <= entry_price:
@@ -1261,9 +1307,10 @@ async def multi_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_
             f"✅ **СДЕЛКА #{trade_count} ДОБАВЛЕНА**\n\n"
             f"**Актив:** {current_trade['asset']}\n"
             f"**Направление:** {current_trade['direction']}\n"
+            f"**Кредитное плечо:** {leverage}\n"
             f"**Вход:** {current_trade['entry_price']}\n"
-            f"**SL:** {current_trade['stop_loss']}\n"
-            f"**TP:** {current_trade['take_profit']}\n"
+            f"**SL:** {current_trade['stop_loss']} ({metrics['stop_distance_pips']:.0f} пунктов)\n"
+            f"**TP:** {current_trade['take_profit']} ({metrics['profit_distance_pips']:.0f} пунктов)\n"
             f"**Риск:** {current_trade['risk_level']}\n\n"
             f"**📊 ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ (НА ОСНОВЕ РИСКА):**\n"
             f"• Депозит: ${metrics['deposit']:,.2f}\n"
@@ -1380,6 +1427,7 @@ async def show_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE, use
             f"• Потенциальная прибыль: ${metrics['total_profit']:.2f}\n"
             f"• Общая маржа: ${metrics['total_margin']:.2f}\n"
             f"• Уровень маржи портфеля: {metrics['portfolio_margin_level']:.1f}%\n"
+            f"• Использование маржи: {metrics['total_margin_usage']:.1f}%\n"
             f"• Средний R/R: {metrics['avg_rr_ratio']:.2f}\n"
             f"• Волатильность портфеля: {metrics['portfolio_volatility']:.1f}%\n"
             f"• LONG/Short: {metrics['long_positions']}/{metrics['short_positions']}\n\n"
@@ -1462,6 +1510,7 @@ async def export_portfolio_handler(update: Update, context: ContextTypes.DEFAULT
         f"Потенциальная прибыль: ${metrics['total_profit']:.2f}",
         f"Общая маржа: ${metrics['total_margin']:.2f}",
         f"Уровень маржи портфеля: {metrics['portfolio_margin_level']:.1f}%",
+        f"Использование маржи: {metrics['total_margin_usage']:.1f}%",
         f"Средний R/R: {metrics['avg_rr_ratio']:.2f}",
         f"Волатильность: {metrics['portfolio_volatility']:.1f}%",
         f"Активов: {metrics['unique_assets']} | LONG: {metrics['long_positions']} | SHORT: {metrics['short_positions']}",
