@@ -5,6 +5,7 @@ import asyncio
 import time
 import functools
 import json
+import telegram
 import io
 import re
 import aiohttp
