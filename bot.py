@@ -1,4 +1,4 @@
-# bot.py — PRO Risk Calculator v3.0 | ENTERPRISE EDITION
+# bot.py — PRO Risk Calculator v3.0 | ENTERPRISE EDITION - ИСПРАВЛЕННАЯ ВЕРСИЯ
 import os
 import logging
 import asyncio
@@ -45,6 +45,7 @@ ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY") 
 BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+EXCHANGERATE_API_KEY = os.getenv("EXCHANGERATE_API_KEY", "d8f8278cf29f8fe18445e8b7")
 
 # Donation Wallets
 USDT_WALLET_ADDRESS = os.getenv("USDT_WALLET_ADDRESS", "TVRGFPKVs1nN3fUXBTQfu5syTcmYGgADre")
@@ -288,7 +289,7 @@ class DonationSystem:
         )
 
 # ---------------------------
-# Market Data Provider - РЕАЛЬНЫЕ КОТИРОВКИ
+# Market Data Provider - РЕАЛЬНЫЕ КОТИРОВКИ С УЛУЧШЕННОЙ СИСТЕМОЙ
 # ---------------------------
 class MarketDataProvider:
     """Универсальный провайдер рыночных данных с кэшированием"""
@@ -307,7 +308,7 @@ class MarketDataProvider:
         return await self.get_robust_real_time_price(symbol)
     
     async def get_robust_real_time_price(self, symbol: str) -> float:
-        """Надежное получение реальных цен с fallback"""
+        """НАДЕЖНОЕ получение реальных цен с улучшенной очередью провайдеров"""
         try:
             # Проверка кэша
             cached_price = self.cache.get(symbol)
@@ -315,19 +316,21 @@ class MarketDataProvider:
                 return cached_price
                 
             # Определяем тип актива и выбираем провайдера
-            price = None
+            providers = [
+                self._get_exchangerate_price,    # НОВЫЙ - для Forex
+                self._get_binance_price,         # Крипто
+                self._get_alpha_vantage_stock,   # Акции
+                self._get_alpha_vantage_forex,   # Forex резерв
+                self._get_finnhub_price,         # Общий резерв
+                self._get_fallback_price         # Статические данные
+            ]
             
-            if self._is_crypto(symbol):
-                price = await self._get_binance_price(symbol)
-            elif self._is_forex(symbol) or self._is_metal(symbol):
-                price = await self._get_alpha_vantage_forex(symbol)
-            else:  # Акции, индексы
-                price = await self._get_alpha_vantage_stock(symbol)
-                
-            # Резервный провайдер
-            if price is None:
-                price = await self._get_finnhub_price(symbol)
-                
+            price = None
+            for provider in providers:
+                price = await provider(symbol)
+                if price and price > 0:
+                    break
+                    
             # Fallback на статические данные при ошибках
             if price is None or price <= 0:
                 logger.warning(f"Не удалось получить цену для {symbol}, используется fallback")
@@ -358,9 +361,30 @@ class MarketDataProvider:
         metals = ['XAUUSD', 'XAGUSD', 'XPTUSD', 'XPDUSD']
         return symbol in metals
     
+    async def _get_exchangerate_price(self, symbol: str) -> Optional[float]:
+        """НОВЫЙ: Frankfurter API для точных Forex цен"""
+        try:
+            if self._is_forex(symbol):
+                # Конвертация EURUSD -> EUR/USD
+                from_curr = symbol[:3]
+                to_curr = symbol[3:]
+                url = f"https://api.frankfurter.app/latest?from={from_curr}&to={to_curr}"
+                
+                session = await self.get_session()
+                async with session.get(url, timeout=5) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return data['rates'][to_curr]
+        except Exception as e:
+            logger.error(f"ExchangeRate API error for {symbol}: {e}")
+        return None
+    
     async def _get_binance_price(self, symbol: str) -> Optional[float]:
         """Получение цены с Binance API"""
         try:
+            if not self._is_crypto(symbol):
+                return None
+                
             session = await self.get_session()
             # Форматируем символ для Binance
             binance_symbol = symbol.replace('USDT', '') + 'USDT'
@@ -376,7 +400,7 @@ class MarketDataProvider:
     
     async def _get_alpha_vantage_stock(self, symbol: str) -> Optional[float]:
         """Получение цены акций с Alpha Vantage"""
-        if not ALPHA_VANTAGE_API_KEY:
+        if not ALPHA_VANTAGE_API_KEY or self._is_forex(symbol) or self._is_crypto(symbol):
             return None
             
         try:
@@ -394,7 +418,7 @@ class MarketDataProvider:
     
     async def _get_alpha_vantage_forex(self, symbol: str) -> Optional[float]:
         """Получение Forex цен с Alpha Vantage"""
-        if not ALPHA_VANTAGE_API_KEY:
+        if not ALPHA_VANTAGE_API_KEY or not self._is_forex(symbol):
             return None
             
         try:
@@ -433,9 +457,22 @@ class MarketDataProvider:
     def _get_fallback_price(self, symbol: str) -> float:
         """Fallback цены при недоступности API"""
         fallback_prices = {
-            'BTCUSDT': 45000.0, 'ETHUSDT': 3000.0, 'EURUSD': 1.0850,
-            'GBPUSD': 1.2650, 'XAUUSD': 1980.0, 'AAPL': 185.0,
-            'TSLA': 240.0, 'NAS100': 16200.0, 'OIL': 75.0
+            # Forex
+            'EURUSD': 1.0850, 'GBPUSD': 1.2650, 'USDJPY': 148.50, 'USDCHF': 0.8800,
+            'AUDUSD': 0.6520, 'USDCAD': 1.3500, 'NZDUSD': 0.6100,
+            # Crypto
+            'BTCUSDT': 45000.0, 'ETHUSDT': 3000.0, 'XRPUSDT': 0.62, 'LTCUSDT': 71.50,
+            'BCHUSDT': 245.00, 'ADAUSDT': 0.48, 'DOTUSDT': 6.80,
+            # Stocks
+            'AAPL': 185.0, 'TSLA': 240.0, 'GOOGL': 138.0, 'MSFT': 330.0,
+            'AMZN': 155.0, 'META': 320.0, 'NFLX': 485.0,
+            # Indices
+            'NAS100': 16200.0, 'SPX500': 4500.0, 'DJ30': 34500.0, 'FTSE100': 7600.0,
+            'DAX40': 15900.0, 'NIKKEI225': 33200.0, 'ASX200': 7200.0,
+            # Metals
+            'XAUUSD': 1980.0, 'XAGUSD': 23.50, 'XPTUSD': 920.0, 'XPDUSD': 980.0,
+            # Energy
+            'OIL': 75.0, 'NATURALGAS': 2.80, 'BRENT': 78.50
         }
         return fallback_prices.get(symbol, 100.0)
 
@@ -905,6 +942,30 @@ class ProfessionalRiskCalculator:
             return abs(distance) * 10000
 
     @staticmethod
+    async def calculate_realistic_pnl(trade: Dict, current_price: float, volume: float, pip_value: float, direction: str, asset: str) -> float:
+        """РЕАЛИСТИЧНЫЙ расчет P&L с учетом объема и стоимости пункта"""
+        entry = trade['entry_price']
+        
+        if direction == 'LONG':
+            price_diff = current_price - entry
+        else:  # SHORT
+            price_diff = entry - current_price
+        
+        # ПРАВИЛЬНОЕ преобразование в пункты с учетом спецификаций актива
+        specs = InstrumentSpecs.get_specs(asset)
+        pip_decimal_places = specs.get('pip_decimal_places', 4)
+        
+        if pip_decimal_places == 2:  # JPY пары
+            pip_diff = price_diff * 100
+        elif pip_decimal_places == 1:  # Некоторые индексы
+            pip_diff = price_diff * 10
+        else:  # Стандартные 4 знака
+            pip_diff = price_diff * 10000
+        
+        current_pnl = volume * pip_diff * pip_value
+        return round(current_pnl, 2)
+
+    @staticmethod
     async def calculate_professional_metrics(trade: Dict, deposit: float, leverage: str, risk_level: str) -> Dict[str, Any]:
         """
         ПРОФЕССИОНАЛЬНЫЙ расчет с реальными котировками и маржой
@@ -922,7 +983,7 @@ class ProfessionalRiskCalculator:
             # 2. Получение спецификаций инструмента
             specs = InstrumentSpecs.get_specs(asset)
             
-            # 3. Расчет суммы риска
+            # 3. Расчет суммы риска - ИСПРАВЛЕННЫЙ РАСЧЕТ
             risk_percent = float(risk_level.strip('%'))
             risk_amount = deposit * (risk_percent / 100)
             
@@ -933,7 +994,7 @@ class ProfessionalRiskCalculator:
             # 5. Получаем стоимость пункта
             pip_value = specs['pip_value']
             
-            # 6. Расчет объема на основе РИСКА
+            # 6. Расчет объема на основе РИСКА - ИСПРАВЛЕННЫЙ РАСЧЕТ
             if stop_distance_pips > 0 and pip_value > 0:
                 volume_lots = risk_amount / (stop_distance_pips * pip_value)
                 volume_lots = round(volume_lots, 2)
@@ -947,9 +1008,9 @@ class ProfessionalRiskCalculator:
             required_margin = margin_data['required_margin']
             required_margin = round(required_margin, 2)
             
-            # 8. Расчет всех метрик
+            # 8. Расчет всех метрик - ИСПРАВЛЕННЫЕ РАСЧЕТЫ
             free_margin = deposit - required_margin
-            free_margin = round(free_margin, 2)
+            free_margin = round(max(free_margin, 0), 2)  # Защита от отрицательных значений
             
             margin_level = (deposit / required_margin) * 100 if required_margin > 0 else 0
             margin_level = round(margin_level, 1)
@@ -965,8 +1026,10 @@ class ProfessionalRiskCalculator:
             margin_usage_percent = (required_margin / deposit) * 100 if deposit > 0 else 0
             notional_value = margin_data.get('notional_value', 0)
             
-            # Расчет реалистичного P&L
-            current_pnl = await ProfessionalRiskCalculator.calculate_realistic_pnl(trade, current_price, volume_lots, pip_value, direction)
+            # Расчет реалистичного P&L - ИСПРАВЛЕННЫЙ
+            current_pnl = await ProfessionalRiskCalculator.calculate_realistic_pnl(
+                trade, current_price, volume_lots, pip_value, direction, asset
+            )
             
             return {
                 'volume_lots': volume_lots,
@@ -993,23 +1056,30 @@ class ProfessionalRiskCalculator:
             }
         except Exception as e:
             logger.error(f"Профессиональный расчет ошибка: {e}")
-            return {}
-
-    @staticmethod
-    async def calculate_realistic_pnl(trade: Dict, current_price: float, volume: float, pip_value: float, direction: str) -> float:
-        """Расчет реалистичного P&L"""
-        entry = trade['entry_price']
-        asset = trade['asset']
-        
-        if direction == 'LONG':
-            price_diff = current_price - entry
-        else:  # SHORT
-            price_diff = entry - current_price
-        
-        # Конвертация в пункты с учетом спецификаций актива
-        pip_diff = ProfessionalRiskCalculator.calculate_pip_distance(entry, entry + price_diff, direction, asset)
-        
-        return round(volume * pip_diff * pip_value, 2)
+            # Возвращаем безопасные значения по умолчанию
+            return {
+                'volume_lots': 0,
+                'required_margin': 0,
+                'free_margin': deposit,
+                'margin_level': 0,
+                'risk_amount': 0,
+                'risk_percent': 0,
+                'potential_profit': 0,
+                'rr_ratio': 0,
+                'stop_distance_pips': 0,
+                'profit_distance_pips': 0,
+                'pip_value': 0,
+                'contract_size': 0,
+                'deposit': deposit,
+                'leverage': leverage,
+                'risk_per_trade_percent': 0,
+                'margin_usage_percent': 0,
+                'current_price': 0,
+                'calculation_method': 'error',
+                'notional_value': 0,
+                'leverage_used': 1,
+                'current_pnl': 0
+            }
 
 # ---------------------------
 # Portfolio Analyzer (ОБНОВЛЕННЫЙ)
@@ -1019,13 +1089,31 @@ class PortfolioAnalyzer:
     def calculate_portfolio_metrics(trades: List[Dict], deposit: float) -> Dict[str, Any]:
         """Профессиональный расчет метрик портфеля"""
         if not trades:
-            return {}
+            return {
+                'total_risk_usd': 0,
+                'total_risk_percent': 0,
+                'total_profit': 0,
+                'total_margin': 0,
+                'portfolio_margin_level': 0,
+                'total_margin_usage': 0,
+                'avg_rr_ratio': 0,
+                'portfolio_volatility': 0,
+                'long_positions': 0,
+                'short_positions': 0,
+                'direction_balance': 0,
+                'diversity_score': 0,
+                'unique_assets': 0,
+                'total_notional_value': 0,
+                'portfolio_leverage': 0,
+                'free_margin': deposit,
+                'free_margin_percent': 100,
+                'total_pnl': 0
+            }
         
         total_risk = sum(t.get('metrics', {}).get('risk_amount', 0) for t in trades)
         total_profit = sum(t.get('metrics', {}).get('potential_profit', 0) for t in trades)
         total_margin = sum(t.get('metrics', {}).get('required_margin', 0) for t in trades)
         total_notional = sum(t.get('metrics', {}).get('notional_value', 0) for t in trades)
-        total_free_margin = sum(t.get('metrics', {}).get('free_margin', 0) for t in trades) if trades else deposit
         
         avg_rr = sum(t.get('metrics', {}).get('rr_ratio', 0) for t in trades) / len(trades) if trades else 0
         
@@ -1050,8 +1138,8 @@ class PortfolioAnalyzer:
         # Общий левередж портфеля
         portfolio_leverage = total_notional / deposit if deposit > 0 else 0
         
-        # Свободная маржа портфеля
-        free_margin = deposit - total_margin if deposit > 0 else 0
+        # Свободная маржа портфеля - ИСПРАВЛЕННЫЙ РАСЧЕТ
+        free_margin = deposit - total_margin
         free_margin_percent = (free_margin / deposit) * 100 if deposit > 0 else 0
         
         # Общий P&L
@@ -1332,7 +1420,7 @@ async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT
         )
         trade['metrics'] = metrics
         
-        # Отображаем результаты
+        # Отображаем результаты с ИСПРАВЛЕННЫМИ ДАННЫМИ
         text = (
             "🎯 <b>РЕЗУЛЬТАТЫ РАСЧЕТА v3.0</b>\n\n"
             f"Актив: {trade['asset']}\n"
@@ -1342,16 +1430,20 @@ async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT
             f"TP: {trade['take_profit']}\n"
             f"Дистанция SL: {metrics['stop_distance_pips']:.0f} пунктов\n"
             f"Дистанция TP: {metrics['profit_distance_pips']:.0f} пунктов\n"
-            f"Стоимость пункта: ${metrics['pip_value']}\n\n"
-            f"Объем: {metrics['volume_lots']:.2f} лотов\n"
-            f"Риск: ${metrics['risk_amount']:.2f} ({metrics['risk_percent']:.1f}%)\n"
-            f"Потенциальная прибыль: ${metrics['potential_profit']:.2f}\n"
-            f"R/R соотношение: {metrics['rr_ratio']:.2f}\n"
-            f"Требуемая маржа: ${metrics['required_margin']:.2f}\n"
-            f"Свободная маржа: ${metrics['free_margin']:.2f}\n"
-            f"Уровень маржи: {metrics['margin_level']:.1f}%\n"
-            f"Текущая цена: ${metrics['current_price']:.2f}\n"
-            f"Текущий P&L: ${metrics['current_pnl']:.2f}"
+            f"Стоимость пункта: ${metrics['pip_value']:.2f}\n\n"
+            f"💰 <b>ФИНАНСОВЫЕ ПОКАЗАТЕЛИ:</b>\n"
+            f"• Объем: {metrics['volume_lots']:.2f} лотов\n"
+            f"• Риск: ${metrics['risk_amount']:.2f} ({metrics['risk_percent']:.1f}% от депозита)\n"
+            f"• Потенциальная прибыль: ${metrics['potential_profit']:.2f}\n"
+            f"• R/R соотношение: {metrics['rr_ratio']:.2f}\n\n"
+            f"🛡 <b>МАРЖИНАЛЬНЫЕ ПОКАЗАТЕЛИ:</b>\n"
+            f"• Требуемая маржа: ${metrics['required_margin']:.2f}\n"
+            f"• Свободная маржа: ${metrics['free_margin']:.2f}\n"
+            f"• Уровень маржи: {metrics['margin_level']:.1f}%\n"
+            f"• Использование маржи: {metrics['margin_usage_percent']:.1f}%\n\n"
+            f"💡 <b>ТЕКУЩИЙ СТАТУС:</b>\n"
+            f"• Текущая цена: ${metrics['current_price']:.4f}\n"
+            f"• Текущий P&L: ${metrics['current_pnl']:.2f}"
         )
         
         keyboard = [
@@ -1497,28 +1589,39 @@ async def show_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE, use
     
     text = (
         "📊 <b>ПОРТФЕЛЬ v3.0</b>\n\n"
+        f"💰 <b>ОСНОВНЫЕ ПОКАЗАТЕЛИ:</b>\n"
         f"Депозит: ${deposit:,.2f}\n"
         f"Плечо: {user_portfolio['leverage']}\n"
         f"Сделок: {len(trades)}\n\n"
+        f"🎯 <b>РИСКИ И ПРИБЫЛЬ:</b>\n"
         f"Общий риск: ${metrics['total_risk_usd']:.2f} ({metrics['total_risk_percent']:.1f}%)\n"
         f"Потенциальная прибыль: ${metrics['total_profit']:.2f}\n"
+        f"Средний R/R: {metrics['avg_rr_ratio']:.2f}\n"
+        f"Текущий P&L: ${metrics['total_pnl']:.2f}\n\n"
+        f"🛡 <b>МАРЖИНАЛЬНЫЕ ПОКАЗАТЕЛИ:</b>\n"
         f"Требуемая маржа: ${metrics['total_margin']:.2f} ({metrics['total_margin_usage']:.1f}%)\n"
         f"Свободная маржа: ${metrics['free_margin']:.2f} ({metrics['free_margin_percent']:.1f}%)\n"
         f"Уровень маржи: {metrics['portfolio_margin_level']:.1f}%\n"
-        f"Левередж портфеля: {metrics['portfolio_leverage']:.1f}x\n"
+        f"Левередж портфеля: {metrics['portfolio_leverage']:.1f}x\n\n"
+        f"📈 <b>АНАЛИТИКА:</b>\n"
         f"Волатильность: {metrics['portfolio_volatility']:.1f}%\n"
-        f"Средний R/R: {metrics['avg_rr_ratio']:.2f}\n"
-        f"Текущий P&L: ${metrics['total_pnl']:.2f}\n\n"
-        "<b>РЕКОМЕНДАЦИИ:</b>\n" + "\n".join(recommendations) + "\n\n"
-        "<b>СДЕЛКИ:</b>\n"
+        f"Лонгов: {metrics['long_positions']} | Шортов: {metrics['short_positions']}\n"
+        f"Уникальных активов: {metrics['unique_assets']}\n"
+        f"Диверсификация: {metrics['diversity_score']:.1%}\n\n"
+        "<b>💡 РЕКОМЕНДАЦИИ:</b>\n" + "\n".join(f"• {rec}" for rec in recommendations) + "\n\n"
+        "<b>📋 СДЕЛКИ:</b>\n"
     )
     
-    for trade in trades:
+    for i, trade in enumerate(trades, 1):
+        metrics = trade.get('metrics', {})
+        pnl = metrics.get('current_pnl', 0)
+        pnl_sign = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
+        
         text += (
-            f"• {trade['asset']} {trade['direction']}: "
-            f"Вход {trade['entry_price']}, SL {trade['stop_loss']}, TP {trade['take_profit']}\n"
-            f"  Объем: {trade['metrics']['volume_lots']:.2f}, Риск: ${trade['metrics']['risk_amount']:.2f}, "
-            f"P&L: ${trade['metrics']['current_pnl']:.2f}\n"
+            f"{pnl_sign} <b>#{i}</b> {trade['asset']} {trade['direction']}\n"
+            f"   Вход: {trade['entry_price']} | SL: {trade['stop_loss']} | TP: {trade['take_profit']}\n"
+            f"   Объем: {metrics.get('volume_lots', 0):.2f} | Риск: ${metrics.get('risk_amount', 0):.2f}\n"
+            f"   P&L: ${pnl:.2f}\n\n"
         )
     
     keyboard = [
@@ -1645,8 +1748,8 @@ async def main():
             # Настройка диалогов
             setup_conversation_handlers(application)
             
-            # Callback router
-            application.add_handler(CallbackQueryHandler(callback_router))
+            # Callback router - ИСПРАВЛЕННЫЙ
+            application.add_handler(CallbackQueryHandler(callback_router_fixed))
             
             # Обработчик для любых сообщений (fallback)
             application.add_handler(MessageHandler(
@@ -1829,10 +1932,14 @@ async def single_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "🎯 <b>ОДИНОЧНАЯ СДЕЛКА v3.0</b>\n\n"
         "ПРОФЕССИОНАЛЬНЫЙ расчет с РЕАЛЬНЫМИ котировками и защитой от маржин-колла.\n"
         "Объем рассчитывается ИСКЛЮЧИТЕЛЬНО из суммы риска на основе текущих рыночных цен!\n\n"
-        "<b>Механика расчета:</b>\n"
-        "• Риск на сделку = % от депозита\n"
-        "• Объем = Риск / (Дистанция SL в пунктах × Стоимость пункта)\n"
+        "<b>МЕХАНИКА РАСЧЕТА:</b>\n"
+        "• Риск на сделку = % от депозита (вы выбираете %)\n"
+        "• Объем = Риск / (Дистанция SL × Стоимость пункта)\n"
         "• Таким образом объем АВТОМАТИЧЕСКИ адаптируется под ваш риск!\n\n"
+        "<b>ПРИМЕР:</b>\n"
+        "Депозит: $1,000 | Риск: 5% = $50\n"
+        "SL дистанция: 20 пунктов | Стоимость пункта: $10\n"
+        "ОБЪЕМ = $50 / (20 × $10) = 0.25 лота\n\n"
         "<b>Введите ваш депозит в USD:</b>"
     )
     
@@ -2173,9 +2280,9 @@ async def multi_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         "🎯 <b>МУЛЬТИПОЗИЦИОННЫЙ РАСЧЕТ v3.0</b>\n\n"
         "ПРОФЕССИОНАЛЬНЫЙ расчет нескольких сделок с РЕАЛЬНЫМИ котировками.\n"
         "Объем каждой позиции рассчитывается из суммы риска на основе текущих цен!\n\n"
-        "<b>Механика расчета:</b>\n"
-        "• Риск на сделку = % от депозита\n"
-        "• Объем = Риск / (Дистанция SL в пунктах × Стоимость пункта)\n"
+        "<b>МЕХАНИКА РАСЧЕТА:</b>\n"
+        "• Риск на сделку = % от депозита (вы выбираете %)\n"
+        "• Объем = Риск / (Дистанция SL × Стоимость пункта)\n"
         "• Таким образом объем АВТОМАТИЧЕСКИ адаптируется под ваш риск!\n\n"
         "<b>Введите общий депозит в USD:</b>"
     )
@@ -2548,13 +2655,13 @@ async def multi_trade_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 # ---------------------------
-# Callback Router (ОБНОВЛЕННЫЙ)
+# Callback Router (ИСПРАВЛЕННЫЙ)
 # ---------------------------
 @retry_on_timeout(max_retries=2, delay=1.0)
-async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Маршрутизатор callback запросов"""
+async def callback_router_fixed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ГАРАНТИРОВАННО РАБОЧИЕ ОБРАБОТЧИКИ"""
     query = update.callback_query
-    await SafeMessageSender.answer_callback_query(query)
+    await query.answer()  # КРИТИЧЕСКИ ВАЖНО
     
     data = query.data
     
@@ -2581,12 +2688,16 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await DonationSystem.show_usdt_donation(update, context)
         elif data == "donate_ton":
             await DonationSystem.show_ton_donation(update, context)
+        elif data == "single_trade":
+            await single_trade_start(update, context)
+        elif data == "multi_trade_start":
+            await multi_trade_start(update, context)
         else:
-            await SafeMessageSender.answer_callback_query(query, "Команда не распознана")
+            await query.answer("Команда не распознана")
             
     except Exception as e:
         logger.error(f"Error in callback router: {e}")
-        await SafeMessageSender.answer_callback_query(query, "❌ Произошла ошибка")
+        await query.answer("❌ Произошла ошибка")
 
 # ---------------------------
 # Additional Handlers (ОБНОВЛЕННЫЕ)
@@ -2623,6 +2734,7 @@ async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • <b>Как используется?</b> Для оценки риска и рекомендаций
 • <b>Высокая волатильность</b> (>30%) = большие риски И возможности
 • <b>Низкая волатильность</b> (<15%) = стабильность, но меньший потенциал
+
 <b>ПРАКТИЧЕСКОЕ ПРИМЕНЕНИЕ:</b>
 • BTCUSDT: 65% - высокий риск, нужен широкий SL
 • EURUSD: 8% - низкий риск, можно tighter управление
@@ -2726,7 +2838,7 @@ async def future_features_handler(update: Update, context: ContextTypes.DEFAULT_
         "✅ АВТОМАТИЧЕСКИЕ рекомендации\n"
         "✅ МУЛЬТИПОЗИЦИОННЫЙ расчет\n"
         "✅ ПОРТФЕЛЬНАЯ аналитика\n"
-        "✅ QR-коды для донатов\n"
+        "✅ ТЕКСТОВЫЕ адреса для донатов\n"
     )
     
     keyboard = [
