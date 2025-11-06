@@ -22,5 +22,10 @@ services:
         value: 0vMvRqCA9HtK0zpYjF7tgXrKlm48zS3XksRWKuCijznpIohZOoyEsOkBbOnOPZ1r
       - key: FINNHUB_API_KEY
         value: d45o60pr01qieo4r467gd45o60pr01qieo4r4680
+      - key: USDT_WALLET_ADDRESS
+        value: TVRGFPKVs1nN3fUXBTQfu5syTcmYGgADre
+      - key: TON_WALLET_ADDRESS
+        value: UQDpCH-pGSzp3zEkpJY1Wc46gaorw9K-7T9FX7gHTrthMWMj
     healthCheckPath: /health
     autoDeploy: true
+
