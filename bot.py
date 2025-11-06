@@ -895,7 +895,7 @@ class ProfessionalRiskCalculator:
         # Масштабирование в зависимости от типа актива
         if pip_decimal_places == 2:  # JPY пары
             return abs(distance) * 100
-        elif pip_decimal_places = = 1:  # Некоторые индексы
+        elif pip_decimal_places == 1:  # Некоторые индексы
             return abs(distance) * 10
         else:  # Стандартные 4 знака
             return abs(distance) * 10000
