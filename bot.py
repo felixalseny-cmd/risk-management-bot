@@ -150,85 +150,85 @@ class SafeMessageSender:
             logger.error(f"Failed to send message to {chat_id}: {e}")
             return False
     @staticmethod
-@retry_on_timeout(max_retries=2, delay=1.0)
-async def edit_message_text(
-    query: 'CallbackQuery',
-    text: str,
-    reply_markup: InlineKeyboardMarkup = None,
-    parse_mode: str = 'HTML'
-) -> bool:
-    """Безопасное редактирование сообщения с исправлением HTML"""
-    try:
-        # Очистка HTML от некорректных тегов
-        if parse_mode == 'HTML':
-            # Удаляем все некорректные HTML теги
-            text = re.sub(r'<[^>]*>', '', text)
-            # Или используем безопасное экранирование
-            # text = html.escape(text)
+    @retry_on_timeout(max_retries=2, delay=1.0)
+    async def edit_message_text(
+        query: 'CallbackQuery',
+        text: str,
+        reply_markup: InlineKeyboardMarkup = None,
+        parse_mode: str = 'HTML'
+    ) -> bool:
+        """Безопасное редактирование сообщения с исправлением HTML"""
+        try:
+            # Очистка HTML от некорректных тегов
+            if parse_mode == 'HTML':
+                # Удаляем все некорректные HTML теги
+                text = re.sub(r'<[^>]*>', '', text)
+                # Или используем безопасное экранирование
+                # text = html.escape(text)
         
-        await query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode
-        )
-        return True
-    except telegram.error.BadRequest as e:
-        if "Message is not modified" in str(e):
-            return True
-        elif "Can't parse entities" in str(e):
-            # Повторная попытка без HTML разметки
-            logger.warning("HTML parse error, retrying without formatting")
             await query.edit_message_text(
                 text=text,
                 reply_markup=reply_markup,
-                parse_mode=None
-            )
+                parse_mode=parse_mode
+        )
             return True
-        logger.warning(f"BadRequest while editing message: {e}")
-        return False
-    except Exception as e:
-        logger.error(f"Failed to edit message: {e}")
-        return False 
+        except telegram.error.BadRequest as e:
+            if "Message is not modified" in str(e):
+           return True
+            elif "Can't parse entities" in str(e):
+                # Повторная попытка без HTML разметки
+                logger.warning("HTML parse error, retrying without formatting")
+                await query.edit_message_text(
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode=None
+                )
+            return True
+            logger.warning(f"BadRequest while editing message: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to edit message: {e}")
+            return False 
     @staticmethod
-@retry_on_timeout(max_retries=2, delay=1.0)
-async def edit_message_text(
-    query: 'CallbackQuery',
-    text: str,
-    reply_markup: InlineKeyboardMarkup = None,
-    parse_mode: str = 'HTML'
-) -> bool:
-    """Безопасное редактирование сообщения с исправлением HTML"""
-    try:
-        # Очистка HTML от некорректных тегов
-        if parse_mode == 'HTML':
-            # Удаляем все некорректные HTML теги
-            text = re.sub(r'<[^>]*>', '', text)
-            # Или используем безопасное экранирование
-            # text = html.escape(text)
+    @retry_on_timeout(max_retries=2, delay=1.0)
+    async def edit_message_text(
+        query: 'CallbackQuery',
+        text: str,
+        reply_markup: InlineKeyboardMarkup = None,
+        parse_mode: str = 'HTML'
+    ) -> bool:
+        """Безопасное редактирование сообщения с исправлением HTML"""
+        try:
+            # Очистка HTML от некорректных тегов
+            if parse_mode == 'HTML':
+                # Удаляем все некорректные HTML теги
+                text = re.sub(r'<[^>]*>', '', text)
+                # Или используем безопасное экранирование
+                # text = html.escape(text)
         
-        await query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode
-        )
-        return True
-    except telegram.error.BadRequest as e:
-        if "Message is not modified" in str(e):
-            return True
-        elif "Can't parse entities" in str(e):
-            # Повторная попытка без HTML разметки
-            logger.warning("HTML parse error, retrying without formatting")
             await query.edit_message_text(
                 text=text,
                 reply_markup=reply_markup,
-                parse_mode=None
+                parse_mode=parse_mode
             )
             return True
-        logger.warning(f"BadRequest while editing message: {e}")
-        return False
-    except Exception as e:
-        logger.error(f"Failed to edit message: {e}")
-        return False
+        except telegram.error.BadRequest as e:
+            if "Message is not modified" in str(e):
+                return True
+            elif "Can't parse entities" in str(e):
+                # Повторная попытка без HTML разметки
+                logger.warning("HTML parse error, retrying without formatting")
+                await query.edit_message_text(
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode=None
+                ) 
+                return True
+            logger.warning(f"BadRequest while editing message: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to edit message: {e}")
+            return False
     @staticmethod
     @retry_on_timeout(max_retries=2, delay=1.0)
     async def edit_message_text(
