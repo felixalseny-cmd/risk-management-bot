@@ -174,7 +174,7 @@ class SafeMessageSender:
             return True
         except telegram.error.BadRequest as e:
             if "Message is not modified" in str(e):
-           return True
+            return True
             elif "Can't parse entities" in str(e):
                 # Повторная попытка без HTML разметки
                 logger.warning("HTML parse error, retrying without formatting")
