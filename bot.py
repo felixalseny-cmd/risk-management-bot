@@ -1,4 +1,4 @@
-# bot.py — PRO Risk Calculator v3.0 | ENTERPRISE EDITION - ИСПРАВЛЕННАЯ ВЕРСИЯ
+# bot.py — PRO Risk Calculator v3.0 | ENTERPRISE EDITION - ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ВЕРСИЯ
 import os
 import logging
 import asyncio
@@ -149,86 +149,7 @@ class SafeMessageSender:
         except Exception as e:
             logger.error(f"Failed to send message to {chat_id}: {e}")
             return False
-    @staticmethod
-    @retry_on_timeout(max_retries=2, delay=1.0)
-    async def edit_message_text(
-        query: 'CallbackQuery',
-        text: str,
-        reply_markup: InlineKeyboardMarkup = None,
-        parse_mode: str = 'HTML'
-    ) -> bool:
-        """Безопасное редактирование сообщения с исправлением HTML"""
-        try:
-            # Очистка HTML от некорректных тегов
-            if parse_mode == 'HTML':
-                # Удаляем все некорректные HTML теги
-                text = re.sub(r'<[^>]*>', '', text)
-                # Или используем безопасное экранирование
-                # text = html.escape(text)
-        
-            await query.edit_message_text(
-                text=text,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode
-        )
-            return True
-        except telegram.error.BadRequest as e:
-            if "Message is not modified" in str(e):
-                return True
-            elif "Can't parse entities" in str(e):
-                # Повторная попытка без HTML разметки
-                logger.warning("HTML parse error, retrying without formatting")
-                await query.edit_message_text(
-                    text=text,
-                    reply_markup=reply_markup,
-                    parse_mode=None
-                )
-            return True
-            logger.warning(f"BadRequest while editing message: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Failed to edit message: {e}")
-            return False 
-    @staticmethod
-    @retry_on_timeout(max_retries=2, delay=1.0)
-    async def edit_message_text(
-        query: 'CallbackQuery',
-        text: str,
-        reply_markup: InlineKeyboardMarkup = None,
-        parse_mode: str = 'HTML'
-    ) -> bool:
-        """Безопасное редактирование сообщения с исправлением HTML"""
-        try:
-            # Очистка HTML от некорректных тегов
-            if parse_mode == 'HTML':
-                # Удаляем все некорректные HTML теги
-                text = re.sub(r'<[^>]*>', '', text)
-                # Или используем безопасное экранирование
-                # text = html.escape(text)
-        
-            await query.edit_message_text(
-                text=text,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode
-            )
-            return True
-        except telegram.error.BadRequest as e:
-            if "Message is not modified" in str(e):
-                return True
-            elif "Can't parse entities" in str(e):
-                # Повторная попытка без HTML разметки
-                logger.warning("HTML parse error, retrying without formatting")
-                await query.edit_message_text(
-                    text=text,
-                    reply_markup=reply_markup,
-                    parse_mode=None
-                ) 
-                return True
-            logger.warning(f"BadRequest while editing message: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Failed to edit message: {e}")
-            return False
+    
     @staticmethod
     @retry_on_timeout(max_retries=2, delay=1.0)
     async def edit_message_text(
@@ -1819,7 +1740,6 @@ async def main():
             
             # Создаем устойчивое приложение
             application = RobustApplicationBuilder.create_application(TOKEN)
-            application.add_error_handler(error_handler)
             
             # Регистрация обработчиков
             application.add_handler(CommandHandler("start", start_command))
@@ -1840,21 +1760,7 @@ async def main():
                     context
                 )
             ))
-
-    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Глобальный обработчик ошибок"""
-    try:
-        logger.error("Exception while handling an update:", exc_info=context.error)
-        
-        # Пытаемся отправить сообщение об ошибке пользователю
-        if update and update.effective_chat:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="❌ Произошла ошибка. Пожалуйста, попробуйте еще раз или используйте /start"
-            )
-    except Exception as e:
-        logger.error(f"Error in error handler: {e}")
-        
+            
             # Режим запуска
             if WEBHOOK_URL and WEBHOOK_URL.strip():
                 logger.info("Запуск в режиме WEBHOOK")
@@ -2175,9 +2081,13 @@ async def single_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE)
     asset = query.data.replace('asset_', '')
     context.user_data['asset'] = asset
     
+    # ПОЛУЧАЕМ РЕАЛЬНУЮ ЦЕНУ АКТИВА ДЛЯ ОТОБРАЖЕНИЯ
+    current_price = await market_data_provider.get_real_time_price(asset)
+    
     await SafeMessageSender.edit_message_text(
         query,
-        f"✅ Актив: {asset}\n\n"
+        f"✅ Актив: {asset}\n"
+        f"💡 Текущая цена: <b>{current_price:.4f}</b>\n\n"
         "<b>Выберите направление сделки:</b>",
         InlineKeyboardMarkup([
             [InlineKeyboardButton("📈 LONG", callback_data="dir_LONG")],
@@ -2203,9 +2113,13 @@ async def single_trade_asset_manual(update: Update, context: ContextTypes.DEFAUL
     
     context.user_data['asset'] = asset
     
+    # ПОЛУЧАЕМ РЕАЛЬНУЮ ЦЕНУ АКТИВА ДЛЯ ОТОБРАЖЕНИЯ
+    current_price = await market_data_provider.get_real_time_price(asset)
+    
     await SafeMessageSender.send_message(
         update.message.chat_id,
-        f"✅ Актив: {asset}\n\n"
+        f"✅ Актив: {asset}\n"
+        f"💡 Текущая цена: <b>{current_price:.4f}</b>\n\n"
         "<b>Выберите направление сделки:</b>",
         context,
         InlineKeyboardMarkup([
@@ -2225,9 +2139,14 @@ async def single_trade_direction(update: Update, context: ContextTypes.DEFAULT_T
     direction = query.data.replace('dir_', '')
     context.user_data['direction'] = direction
     
+    # ПОЛУЧАЕМ РЕАЛЬНУЮ ЦЕНУ АКТИВА ДЛЯ ОТОБРАЖЕНИЯ ПРИ ВВОДЕ ЦЕНЫ ВХОДА
+    asset = context.user_data['asset']
+    current_price = await market_data_provider.get_real_time_price(asset)
+    
     await SafeMessageSender.edit_message_text(
         query,
-        f"✅ Направление: {direction}\n\n"
+        f"✅ Направление: {direction}\n"
+        f"💡 Текущая цена {asset}: <b>{current_price:.4f}</b>\n\n"
         "<b>Введите цену входа:</b>",
         InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
@@ -2252,9 +2171,14 @@ async def single_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         context.user_data['entry_price'] = entry_price
         
+        # ПОЛУЧАЕМ РЕАЛЬНУЮ ЦЕНУ АКТИВА ДЛЯ ОТОБРАЖЕНИЯ ПРИ ВВОДЕ SL
+        asset = context.user_data['asset']
+        current_price = await market_data_provider.get_real_time_price(asset)
+        
         await SafeMessageSender.send_message(
             update.message.chat_id,
-            f"✅ Цена входа: {entry_price}\n\n"
+            f"✅ Цена входа: {entry_price}\n"
+            f"💡 Текущая цена {asset}: <b>{current_price:.4f}</b>\n\n"
             "<b>Введите уровень стоп-лосса:</b>",
             context,
             InlineKeyboardMarkup([
@@ -2336,9 +2260,14 @@ async def single_trade_risk_level(update: Update, context: ContextTypes.DEFAULT_
     risk_level = query.data.replace('risk_', '')
     context.user_data['risk_level'] = risk_level
     
+    # ПОЛУЧАЕМ РЕАЛЬНУЮ ЦЕНУ АКТИВА ДЛЯ ОТОБРАЖЕНИЯ ПРИ ВВОДЕ TP
+    asset = context.user_data['asset']
+    current_price = await market_data_provider.get_real_time_price(asset)
+    
     await SafeMessageSender.edit_message_text(
         query,
-        f"✅ Уровень риска: {risk_level}\n\n"
+        f"✅ Уровень риска: {risk_level}\n"
+        f"💡 Текущая цена {asset}: <b>{current_price:.4f}</b>\n\n"
         "<b>Введите уровень тейк-профита:</b>",
         InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
@@ -2533,9 +2462,13 @@ async def multi_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     asset = query.data.replace('asset_', '')
     context.user_data['current_trade']['asset'] = asset
     
+    # ПОЛУЧАЕМ РЕАЛЬНУЮ ЦЕНУ АКТИВА ДЛЯ ОТОБРАЖЕНИЯ
+    current_price = await market_data_provider.get_real_time_price(asset)
+    
     await SafeMessageSender.edit_message_text(
         query,
-        f"✅ Актив: {asset}\n\n"
+        f"✅ Актив: {asset}\n"
+        f"💡 Текущая цена: <b>{current_price:.4f}</b>\n\n"
         "<b>Выберите направление сделки:</b>",
         InlineKeyboardMarkup([
             [InlineKeyboardButton("📈 LONG", callback_data="dir_LONG")],
@@ -2560,9 +2493,13 @@ async def multi_trade_asset_manual(update: Update, context: ContextTypes.DEFAULT
     
     context.user_data['current_trade']['asset'] = asset
     
+    # ПОЛУЧАЕМ РЕАЛЬНУЮ ЦЕНУ АКТИВА ДЛЯ ОТОБРАЖЕНИЯ
+    current_price = await market_data_provider.get_real_time_price(asset)
+    
     await SafeMessageSender.send_message(
         update.message.chat_id,
-        f"✅ Актив: {asset}\n\n"
+        f"✅ Актив: {asset}\n"
+        f"💡 Текущая цена: <b>{current_price:.4f}</b>\n\n"
         "<b>Выберите направление сделки:</b>",
         context,
         InlineKeyboardMarkup([
@@ -2582,9 +2519,14 @@ async def multi_trade_direction(update: Update, context: ContextTypes.DEFAULT_TY
     direction = query.data.replace('dir_', '')
     context.user_data['current_trade']['direction'] = direction
     
+    # ПОЛУЧАЕМ РЕАЛЬНУЮ ЦЕНУ АКТИВА ДЛЯ ОТОБРАЖЕНИЯ ПРИ ВВОДЕ ЦЕНЫ ВХОДА
+    asset = context.user_data['current_trade']['asset']
+    current_price = await market_data_provider.get_real_time_price(asset)
+    
     await SafeMessageSender.edit_message_text(
         query,
-        f"✅ Направление: {direction}\n\n"
+        f"✅ Направление: {direction}\n"
+        f"💡 Текущая цена {asset}: <b>{current_price:.4f}</b>\n\n"
         "<b>Введите цену входа:</b>",
         InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
@@ -2609,9 +2551,14 @@ async def multi_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         context.user_data['current_trade']['entry_price'] = entry_price
         
+        # ПОЛУЧАЕМ РЕАЛЬНУЮ ЦЕНУ АКТИВА ДЛЯ ОТОБРАЖЕНИЯ ПРИ ВВОДЕ SL
+        asset = context.user_data['current_trade']['asset']
+        current_price = await market_data_provider.get_real_time_price(asset)
+        
         await SafeMessageSender.send_message(
             update.message.chat_id,
-            f"✅ Цена входа: {entry_price}\n\n"
+            f"✅ Цена входа: {entry_price}\n"
+            f"💡 Текущая цена {asset}: <b>{current_price:.4f}</b>\n\n"
             "<b>Введите уровень стоп-лосса:</b>",
             context,
             InlineKeyboardMarkup([
@@ -2691,9 +2638,14 @@ async def multi_trade_risk_level(update: Update, context: ContextTypes.DEFAULT_T
     risk_level = query.data.replace('risk_', '')
     context.user_data['current_trade']['risk_level'] = risk_level
     
+    # ПОЛУЧАЕМ РЕАЛЬНУЮ ЦЕНУ АКТИВА ДЛЯ ОТОБРАЖЕНИЯ ПРИ ВВОДЕ TP
+    asset = context.user_data['current_trade']['asset']
+    current_price = await market_data_provider.get_real_time_price(asset)
+    
     await SafeMessageSender.edit_message_text(
         query,
-        f"✅ Уровень риска: {risk_level}\n\n"
+        f"✅ Уровень риска: {risk_level}\n"
+        f"💡 Текущая цена {asset}: <b>{current_price:.4f}</b>\n\n"
         "<b>Введите уровень тейк-профита:</b>",
         InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
