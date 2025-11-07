@@ -149,10 +149,7 @@ class SafeMessageSender:
         except Exception as e:
             logger.error(f"Failed to send message to {chat_id}: {e}")
             return False
-
-    # Добавьте этот код в SafeMessageSender.edit_message_text для исправления ошибки HTML:
-
-@staticmethod
+    @staticmethod
 @retry_on_timeout(max_retries=2, delay=1.0)
 async def edit_message_text(
     query: 'CallbackQuery',
@@ -191,8 +188,8 @@ async def edit_message_text(
         return False
     except Exception as e:
         logger.error(f"Failed to edit message: {e}")
-        return False
-     @staticmethod
+        return False 
+    @staticmethod
 @retry_on_timeout(max_retries=2, delay=1.0)
 async def edit_message_text(
     query: 'CallbackQuery',
