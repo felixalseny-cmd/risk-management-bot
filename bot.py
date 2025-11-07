@@ -1843,10 +1843,10 @@ async def main():
 
     async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Глобальный обработчик ошибок"""
-    logger.error("Exception while handling an update:", exc_info=context.error)
-    
-    # Пытаемся отправить сообщение об ошибке пользователю
     try:
+        logger.error("Exception while handling an update:", exc_info=context.error)
+        
+        # Пытаемся отправить сообщение об ошибке пользователю
         if update and update.effective_chat:
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
