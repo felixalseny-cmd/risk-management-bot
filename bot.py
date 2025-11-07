@@ -1822,6 +1822,7 @@ async def main():
             
             # Создаем устойчивое приложение
             application = RobustApplicationBuilder.create_application(TOKEN)
+            application.add_error_handler(error_handler)
             
             # Регистрация обработчиков
             application.add_handler(CommandHandler("start", start_command))
@@ -1842,7 +1843,21 @@ async def main():
                     context
                 )
             ))
-            
+
+    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Глобальный обработчик ошибок"""
+    logger.error("Exception while handling an update:", exc_info=context.error)
+    
+    # Пытаемся отправить сообщение об ошибке пользователю
+    try:
+        if update and update.effective_chat:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ Произошла ошибка. Пожалуйста, попробуйте еще раз или используйте /start"
+            )
+    except Exception as e:
+        logger.error(f"Error in error handler: {e}")
+        
             # Режим запуска
             if WEBHOOK_URL and WEBHOOK_URL.strip():
                 logger.info("Запуск в режиме WEBHOOK")
