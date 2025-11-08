@@ -3376,6 +3376,10 @@ async def main_enhanced():
 # ---------------------------
 # ЗАПУСК ПРИЛОЖЕНИЯ
 # ---------------------------
+async def cleanup_session():
+    """Асинхронное закрытие сессии market data."""
+    if enhanced_market_data.session and not enhanced_market_data.session.closed:
+        await enhanced_market_data.session.close()
 if __name__ == "__main__":
     logger.info("🚀 ЗАПУСК PRO RISK CALCULATOR v3.0 ENTERPRISE EDITION")
     logger.info("✅ ВСЕ КРИТИЧЕСКИЕ ОШИБКИ ИСПРАВЛЕНЫ")
@@ -3389,8 +3393,7 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
         try:
-            if enhanced_market_data.session:
-                await enhanced_market_data.session.close()
-        except:
-            pass
+            asyncio.run(cleanup_session())
+        except Exception as cleanup_err:
+            logger.error(f"Ошибка при cleanup сессии: {cleanup_err}")
         raise
