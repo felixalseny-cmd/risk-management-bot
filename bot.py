@@ -1,4 +1,4 @@
-# bot.py — 💎 PRO RISK CALCULATOR v3.0 ENTERPRISE EDITION - КРИТИЧЕСКИЕ ОШИБКИ ИСПРАВЛЕНЫ
+# bot.py — PRO Risk Calculator v3.0 | ENTERPRISE EDITION - КРИТИЧЕСКИЕ ОШИБКИ ИСПРАВЛЕНЫ
 import os
 import logging
 import asyncio
@@ -1290,10 +1290,10 @@ class DataManager:
         temp_data = DataManager.load_temporary_data()
         temp_data.pop(str(user_id), None)
         DataManager.save_temporary_data(temp_data)
-    
+
     @staticmethod
-    def save_progress(user_id: int, state_data: Dict, state_type: str = "single"):
-        """Сохранение прогресса в temp_progress.json"""
+    def save_progress(user_id: int, state_data: Dict, state_type: str):
+        """Сохранение прогресса"""
         temp_data = DataManager.load_temporary_data()
         temp_data[str(user_id)] = {
             'state_data': state_data,
@@ -1437,12 +1437,6 @@ def get_leverages_for_category(category: str) -> List[str]:
     """Получение списка кредитных плеч для категории активов"""
     return LEVERAGES.get(category, LEVERAGES["DEFAULT"])
 
-def save_user_progress(context: ContextTypes.DEFAULT_TYPE, state_type: str = "single"):
-    """Сохранение прогресса пользователя"""
-    user_id = context._chat_id if hasattr(context, '_chat_id') else context.user_data.get('user_id', 0)
-    if user_id:
-        DataManager.save_progress(user_id, context.user_data.copy(), state_type)
-
 # ---------------------------
 # Command Handlers
 # ---------------------------
@@ -1453,7 +1447,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     PortfolioManager.ensure_user(user_id)
     
     text = (
-        "🎯 <b>💎 PRO RISK CALCULATOR v3.0 ENTERPRISE</b>\n\n"
+        "💎 <b>PRO RISK CALCULATOR v3.0 ENTERPRISE</b>\n\n"
         "Профессиональный инструмент для расчета рисков с РЕАЛЬНЫМИ котировками.\n\n"
         "💎 Функции:\n"
         "• Расчет маржи и объема\n"
@@ -1638,81 +1632,16 @@ async def future_features_handler(update: Update, context: ContextTypes.DEFAULT_
         )
 
 # ---------------------------
-# УЛУЧШЕННЫЕ ОБРАБОТЧИКИ С РЕАЛЬНЫМИ ЦЕНАМИ
-# ---------------------------
-@retry_on_timeout(max_retries=2, delay=1.0)
-async def enhanced_single_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Улучшенный обработчик выбора актива с реальной ценой"""
-    query = update.callback_query
-    await SafeMessageSender.answer_callback_query(query)
-    
-    if query.data == "back_to_categories":
-        keyboard = []
-        for category in ASSET_CATEGORIES.keys():
-            keyboard.append([InlineKeyboardButton(category, callback_data=f"cat_{category}")])
-        
-        keyboard.append([InlineKeyboardButton("📝 Ввести актив вручную", callback_data="asset_manual")])
-        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
-        
-        await SafeMessageSender.edit_message_text(
-            query,
-            "<b>Выберите категорию актива:</b>",
-            InlineKeyboardMarkup(keyboard)
-        )
-        save_user_progress(context, "single")
-        return SingleTradeState.ASSET_CATEGORY.value
-    
-    asset = query.data.replace('asset_', '')
-    context.user_data['asset'] = asset
-    
-    price_info = await show_asset_price_in_realtime(asset)
-    
-    await SafeMessageSender.edit_message_text(
-        query,
-        f"✅ Актив: {asset}\n{price_info}"
-        "<b>Выберите направление сделки:</b>",
-        InlineKeyboardMarkup([
-            [InlineKeyboardButton("📈 LONG", callback_data="dir_LONG")],
-            [InlineKeyboardButton("📉 SHORT", callback_data="dir_SHORT")],
-            [InlineKeyboardButton("🔙 Назад к категориям", callback_data="back_to_categories")],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
-        ])
-    )
-    save_user_progress(context, "single")
-    return SingleTradeState.DIRECTION.value
-
-@retry_on_timeout(max_retries=2, delay=1.0)
-async def enhanced_single_trade_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Улучшенный обработчик направления с реальной ценой"""
-    query = update.callback_query
-    await SafeMessageSender.answer_callback_query(query)
-    
-    direction = query.data.replace('dir_', '')
-    context.user_data['direction'] = direction
-    
-    asset = context.user_data['asset']
-    price_info = await show_asset_price_in_realtime(asset)
-    
-    await SafeMessageSender.edit_message_text(
-        query,
-        f"✅ Направление: {direction}\n{price_info}"
-        "<b>Введите цену входа:</b>",
-        InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_asset")],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
-        ])
-    )
-    save_user_progress(context, "single")
-    return SingleTradeState.ENTRY.value
-
-# ---------------------------
-# ОСНОВНЫЕ ОБРАБОТЧИКИ СДЕЛОК (SINGLE TRADE)
+# Single Trade Handlers
 # ---------------------------
 @retry_on_timeout(max_retries=2, delay=1.0)
 async def single_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало одиночной сделки с реальными данными"""
     query = update.callback_query
     await SafeMessageSender.answer_callback_query(query)
+    
+    # Save progress
+    DataManager.save_progress(query.from_user.id, {}, "single")
     
     text = (
         "🎯 <b>ОДИНОЧНАЯ СДЕЛКА v3.0</b>\n\n"
@@ -1729,13 +1658,15 @@ async def single_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
         text,
         InlineKeyboardMarkup(keyboard)
     )
-    save_user_progress(context, "single")
     return SingleTradeState.DEPOSIT.value
 
 @retry_on_timeout(max_retries=2, delay=1.0)
 async def single_trade_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка ввода депозита для одиночной сделки"""
     text = update.message.text.strip()
+    
+    # Save progress
+    DataManager.save_progress(update.message.from_user.id, context.user_data.copy(), "single")
     
     try:
         deposit = float(text.replace(',', '.'))
@@ -1766,7 +1697,6 @@ async def single_trade_deposit(update: Update, context: ContextTypes.DEFAULT_TYP
             context,
             InlineKeyboardMarkup(keyboard)
         )
-        save_user_progress(context, "single")
         return SingleTradeState.LEVERAGE.value
         
     except ValueError:
@@ -1786,6 +1716,9 @@ async def single_trade_leverage(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await SafeMessageSender.answer_callback_query(query)
     
+    # Save progress
+    DataManager.save_progress(query.from_user.id, context.user_data.copy(), "single")
+    
     leverage = query.data.replace('lev_', '')
     context.user_data['leverage'] = leverage
     
@@ -1802,7 +1735,6 @@ async def single_trade_leverage(update: Update, context: ContextTypes.DEFAULT_TY
         "<b>Выберите категорию актива:</b>",
         InlineKeyboardMarkup(keyboard)
     )
-    save_user_progress(context, "single")
     return SingleTradeState.ASSET_CATEGORY.value
 
 @retry_on_timeout(max_retries=2, delay=1.0)
@@ -1810,6 +1742,9 @@ async def single_trade_asset_category(update: Update, context: ContextTypes.DEFA
     """Обработка выбора категории активов"""
     query = update.callback_query
     await SafeMessageSender.answer_callback_query(query)
+    
+    # Save progress
+    DataManager.save_progress(query.from_user.id, context.user_data.copy(), "single")
     
     if query.data == "asset_manual":
         await SafeMessageSender.edit_message_text(
@@ -1820,7 +1755,6 @@ async def single_trade_asset_category(update: Update, context: ContextTypes.DEFA
                 [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
             ])
         )
-        save_user_progress(context, "single")
         return SingleTradeState.ASSET.value
     
     category = query.data.replace('cat_', '')
@@ -1841,12 +1775,56 @@ async def single_trade_asset_category(update: Update, context: ContextTypes.DEFA
         "<b>Выберите актив:</b>",
         InlineKeyboardMarkup(keyboard)
     )
-    save_user_progress(context, "single")
     return SingleTradeState.ASSET.value
+
+@retry_on_timeout(max_retries=2, delay=1.0)
+async def enhanced_single_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Улучшенный обработчик выбора актива с реальной ценой"""
+    query = update.callback_query
+    await SafeMessageSender.answer_callback_query(query)
+    
+    # Save progress
+    DataManager.save_progress(query.from_user.id, context.user_data.copy(), "single")
+    
+    if query.data == "back_to_categories":
+        keyboard = []
+        for category in ASSET_CATEGORIES.keys():
+            keyboard.append([InlineKeyboardButton(category, callback_data=f"cat_{category}")])
+        
+        keyboard.append([InlineKeyboardButton("📝 Ввести актив вручную", callback_data="asset_manual")])
+        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
+        
+        await SafeMessageSender.edit_message_text(
+            query,
+            "<b>Выберите категорию актива:</b>",
+            InlineKeyboardMarkup(keyboard)
+        )
+        return SingleTradeState.ASSET_CATEGORY.value
+    
+    asset = query.data.replace('asset_', '')
+    context.user_data['asset'] = asset
+    
+    price_info = await show_asset_price_in_realtime(asset)
+    
+    await SafeMessageSender.edit_message_text(
+        query,
+        f"✅ Актив: {asset}\n{price_info}"
+        "<b>Выберите направление сделки:</b>",
+        InlineKeyboardMarkup([
+            [InlineKeyboardButton("📈 LONG", callback_data="dir_LONG")],
+            [InlineKeyboardButton("📉 SHORT", callback_data="dir_SHORT")],
+            [InlineKeyboardButton("🔙 Назад к категориям", callback_data="back_to_categories")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+        ])
+    )
+    return SingleTradeState.DIRECTION.value
 
 async def single_trade_asset_manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка ручного ввода актива"""
     asset = update.message.text.strip().upper()
+    
+    # Save progress
+    DataManager.save_progress(update.message.from_user.id, context.user_data.copy(), "single")
     
     if not re.match(r'^[A-Z0-9]{2,20}$', asset):
         await SafeMessageSender.send_message(
@@ -1875,12 +1853,40 @@ async def single_trade_asset_manual(update: Update, context: ContextTypes.DEFAUL
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
         ])
     )
-    save_user_progress(context, "single")
     return SingleTradeState.DIRECTION.value
+
+@retry_on_timeout(max_retries=2, delay=1.0)
+async def enhanced_single_trade_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Улучшенный обработчик направления с реальной ценой"""
+    query = update.callback_query
+    await SafeMessageSender.answer_callback_query(query)
+    
+    # Save progress
+    DataManager.save_progress(query.from_user.id, context.user_data.copy(), "single")
+    
+    direction = query.data.replace('dir_', '')
+    context.user_data['direction'] = direction
+    
+    asset = context.user_data['asset']
+    price_info = await show_asset_price_in_realtime(asset)
+    
+    await SafeMessageSender.edit_message_text(
+        query,
+        f"✅ Направление: {direction}\n{price_info}"
+        "<b>Введите цену входа:</b>",
+        InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_asset")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+        ])
+    )
+    return SingleTradeState.ENTRY.value
 
 async def single_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка цены входа для одиночной сделки"""
     text = update.message.text.strip()
+    
+    # Save progress
+    DataManager.save_progress(update.message.from_user.id, context.user_data.copy(), "single")
     
     try:
         entry_price = float(text.replace(',', '.'))
@@ -1909,7 +1915,6 @@ async def single_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
             ])
         )
-        save_user_progress(context, "single")
         return SingleTradeState.STOP_LOSS.value
         
     except ValueError:
@@ -1926,6 +1931,9 @@ async def single_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def single_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка стоп-лосса для одиночной сделки"""
     text = update.message.text.strip()
+    
+    # Save progress
+    DataManager.save_progress(update.message.from_user.id, context.user_data.copy(), "single")
     
     try:
         stop_loss = float(text.replace(',', '.'))
@@ -1977,7 +1985,6 @@ async def single_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_T
             context,
             InlineKeyboardMarkup(keyboard)
         )
-        save_user_progress(context, "single")
         return SingleTradeState.RISK_LEVEL.value
         
     except ValueError:
@@ -1996,6 +2003,9 @@ async def single_trade_risk_level(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await SafeMessageSender.answer_callback_query(query)
     
+    # Save progress
+    DataManager.save_progress(query.from_user.id, context.user_data.copy(), "single")
+    
     risk_level = query.data.replace('risk_', '')
     context.user_data['risk_level'] = risk_level
     
@@ -2010,12 +2020,14 @@ async def single_trade_risk_level(update: Update, context: ContextTypes.DEFAULT_
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
         ])
     )
-    save_user_progress(context, "single")
     return SingleTradeState.TAKE_PROFIT.value
 
 async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка тейк-профита и показ результатов с РЕАЛЬНЫМИ ДАННЫМИ"""
     text = update.message.text.strip()
+    
+    # Save progress
+    DataManager.save_progress(update.message.from_user.id, context.user_data.copy(), "single")
     
     try:
         take_profit = float(text.replace(',', '.'))
@@ -2131,11 +2143,11 @@ async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT
 
 async def single_trade_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отмена одиночной сделки"""
-    user_id = update.message.from_user.id
+    user_id = update.effective_user.id if update.message else update.callback_query.from_user.id
     DataManager.clear_temporary_progress(user_id)
     context.user_data.clear()
     await SafeMessageSender.send_message(
-        update.message.chat_id,
+        update.effective_chat.id,
         "❌ Расчет отменен",
         context,
         InlineKeyboardMarkup([
@@ -2145,7 +2157,7 @@ async def single_trade_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 # ---------------------------
-# МУЛЬТИПОЗИЦИЯ - ПОЛНОСТЬЮ РАБОЧИЙ РАЗДЕЛ
+# Multi Trade Handlers (Зеркало Single Trade с префиксом 'm')
 # ---------------------------
 @retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2153,12 +2165,16 @@ async def multi_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await SafeMessageSender.answer_callback_query(query)
     
+    # Initialize current_multi_trades if not exists
     if 'current_multi_trades' not in context.user_data:
         context.user_data['current_multi_trades'] = []
     
+    # Save progress
+    DataManager.save_progress(query.from_user.id, context.user_data.copy(), "multi")
+    
     text = (
         "📊 <b>МУЛЬТИПОЗИЦИЯ v3.0</b>\n\n"
-        "Расчет нескольких сделок с агрегацией рисков.\n\n"
+        "Расчет нескольких сделок в портфеле.\n\n"
         "<b>Введите ваш депозит в USD:</b>"
     )
     
@@ -2171,13 +2187,15 @@ async def multi_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         text,
         InlineKeyboardMarkup(keyboard)
     )
-    save_user_progress(context, "multi")
     return MultiTradeState.DEPOSIT.value
 
 @retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка депозита для мультипозиции"""
     text = update.message.text.strip()
+    
+    # Save progress
+    DataManager.save_progress(update.message.from_user.id, context.user_data.copy(), "multi")
     
     try:
         deposit = float(text.replace(',', '.'))
@@ -2207,7 +2225,6 @@ async def multi_trade_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE
             context,
             InlineKeyboardMarkup(keyboard)
         )
-        save_user_progress(context, "multi")
         return MultiTradeState.LEVERAGE.value
         
     except ValueError:
@@ -2227,6 +2244,9 @@ async def multi_trade_leverage(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await SafeMessageSender.answer_callback_query(query)
     
+    # Save progress
+    DataManager.save_progress(query.from_user.id, context.user_data.copy(), "multi")
+    
     leverage = query.data.replace('mlev_', '')
     context.user_data['leverage'] = leverage
     
@@ -2234,70 +2254,468 @@ async def multi_trade_leverage(update: Update, context: ContextTypes.DEFAULT_TYP
     for category in ASSET_CATEGORIES.keys():
         keyboard.append([InlineKeyboardButton(category, callback_data=f"mcat_{category}")])
     
-    keyboard.append([InlineKeyboardButton("📝 Ввести актив вручную", callback_data="mass et_manual")])
+    keyboard.append([InlineKeyboardButton("📝 Ввести актив вручную", callback_data="massset_manual")])
     keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
     
     await SafeMessageSender.edit_message_text(
         query,
         f"✅ Плечо: {leverage}\n\n"
-        "<b>Выберите категорию актива для первой сделки:</b>",
+        "<b>Выберите категорию актива:</b>",
         InlineKeyboardMarkup(keyboard)
     )
-    save_user_progress(context, "multi")
     return MultiTradeState.ASSET_CATEGORY.value
 
-# ... (аналогичные handlers для multi_trade_asset_category, multi_trade_asset, etc., mirroring single_trade but with 'm' prefix and adding to current_multi_trades)
-
-async def multi_trade_add_more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Добавление еще одной сделки или завершение"""
+@retry_on_timeout(max_retries=2, delay=1.0)
+async def multi_trade_asset_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка категории для мультипозиции"""
     query = update.callback_query
     await SafeMessageSender.answer_callback_query(query)
     
-    if query.data == "add_more":
-        # Начать новую сделку в мульти
-        await multi_trade_asset_category(update, context)
-        return MultiTradeState.ASSET_CATEGORY.value
-    elif query.data == "finish_multi":
-        # Завершить и показать результаты
-        user_id = query.from_user.id
-        trades = context.user_data.get('current_multi_trades', [])
-        if trades:
-            PortfolioManager.add_multi_trade(user_id, trades)
-            PortfolioManager.set_deposit_leverage(user_id, context.user_data['deposit'], context.user_data['leverage'])
-        
-        # Показать агрегированные результаты
-        deposit = context.user_data['deposit']
-        metrics = PortfolioAnalyzer.calculate_portfolio_metrics(trades, deposit)
-        recommendations = PortfolioAnalyzer.generate_enhanced_recommendations(metrics, trades)
-        
-        text = (
-            "📊 <b>РЕЗУЛЬТАТЫ МУЛЬТИПОЗИЦИИ v3.0</b>\n\n"
-            f"Депозит: ${deposit:,.2f}\n"
-            f"Сделок: {len(trades)}\n"
-            f"Общий риск: ${metrics['total_risk_usd']:.2f} ({metrics['total_risk_percent']:.1f}%)\n"
-            f"Потенциальная прибыль: ${metrics['total_profit']:.2f}\n"
-            f"Уровень маржи: {metrics['portfolio_margin_level']:.1f}%\n\n"
-            "<b>💡 РЕКОМЕНДАЦИИ:</b>\n" + "\n".join(f"• {rec}" for rec in recommendations) + "\n\n"
-            "💎 PRO v3.0 | Smart • Fast • Reliable 🚀"
+    # Save progress
+    DataManager.save_progress(query.from_user.id, context.user_data.copy(), "multi")
+    
+    if query.data == "massset_manual":
+        await SafeMessageSender.edit_message_text(
+            query,
+            "✍️ Введите название актива (например: BTCUSDT):",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Назад", callback_data="mback_to_categories")],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
         )
+        return MultiTradeState.ASSET.value
+    
+    category = query.data.replace('mcat_', '')
+    context.user_data['asset_category'] = category
+    
+    assets = ASSET_CATEGORIES.get(category, [])
+    
+    keyboard = []
+    for asset in assets:
+        keyboard.append([InlineKeyboardButton(asset, callback_data=f"massset_{asset}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад к категориям", callback_data="mback_to_categories")])
+    keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
+    
+    await SafeMessageSender.edit_message_text(
+        query,
+        f"✅ Категория: {category}\n\n"
+        "<b>Выберите актив:</b>",
+        InlineKeyboardMarkup(keyboard)
+    )
+    return MultiTradeState.ASSET.value
+
+@retry_on_timeout(max_retries=2, delay=1.0)
+async def enhanced_multi_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработчик актива для мультипозиции"""
+    query = update.callback_query
+    await SafeMessageSender.answer_callback_query(query)
+    
+    # Save progress
+    DataManager.save_progress(query.from_user.id, context.user_data.copy(), "multi")
+    
+    if query.data == "mback_to_categories":
+        keyboard = []
+        for category in ASSET_CATEGORIES.keys():
+            keyboard.append([InlineKeyboardButton(category, callback_data=f"mcat_{category}")])
         
-        keyboard = [
-            [InlineKeyboardButton("📊 Портфель", callback_data="portfolio")],
-            [InlineKeyboardButton("🎯 Новая мультипозиция", callback_data="multi_trade_start")],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-        ]
+        keyboard.append([InlineKeyboardButton("📝 Ввести актив вручную", callback_data="massset_manual")])
+        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
         
         await SafeMessageSender.edit_message_text(
             query,
-            text,
+            "<b>Выберите категорию актива:</b>",
             InlineKeyboardMarkup(keyboard)
         )
-        
-        DataManager.clear_temporary_progress(user_id)
-        context.user_data.clear()
-        return ConversationHandler.END
+        return MultiTradeState.ASSET_CATEGORY.value
+    
+    asset = query.data.replace('massset_', '')
+    context.user_data['asset'] = asset
+    
+    price_info = await show_asset_price_in_realtime(asset)
+    
+    await SafeMessageSender.edit_message_text(
+        query,
+        f"✅ Актив: {asset}\n{price_info}"
+        "<b>Выберите направление сделки:</b>",
+        InlineKeyboardMarkup([
+            [InlineKeyboardButton("📈 LONG", callback_data="mdir_LONG")],
+            [InlineKeyboardButton("📉 SHORT", callback_data="mdir_SHORT")],
+            [InlineKeyboardButton("🔙 Назад к категориям", callback_data="mback_to_categories")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+        ])
+    )
+    return MultiTradeState.DIRECTION.value
 
-# (Для brevity, assume similar mirroring for other multi states: asset, direction, entry, stop_loss, risk_level, take_profit, adding to current_multi_trades after each take_profit)
+async def multi_trade_asset_manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Ручной ввод актива для мультипозиции"""
+    asset = update.message.text.strip().upper()
+    
+    # Save progress
+    DataManager.save_progress(update.message.from_user.id, context.user_data.copy(), "multi")
+    
+    if not re.match(r'^[A-Z0-9]{2,20}$', asset):
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Неверный формат актива. Попробуйте еще раз:",
+            context,
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
+        )
+        return MultiTradeState.ASSET.value
+    
+    context.user_data['asset'] = asset
+    
+    price_info = await show_asset_price_in_realtime(asset)
+    
+    await SafeMessageSender.send_message(
+        update.message.chat_id,
+        f"✅ Актив: {asset}\n{price_info}"
+        "<b>Выберите направление сделки:</b>",
+        context,
+        InlineKeyboardMarkup([
+            [InlineKeyboardButton("📈 LONG", callback_data="mdir_LONG")],
+            [InlineKeyboardButton("📉 SHORT", callback_data="mdir_SHORT")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="mback_to_categories")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+        ])
+    )
+    return MultiTradeState.DIRECTION.value
+
+@retry_on_timeout(max_retries=2, delay=1.0)
+async def enhanced_multi_trade_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработчик направления для мультипозиции"""
+    query = update.callback_query
+    await SafeMessageSender.answer_callback_query(query)
+    
+    # Save progress
+    DataManager.save_progress(query.from_user.id, context.user_data.copy(), "multi")
+    
+    direction = query.data.replace('mdir_', '')
+    context.user_data['direction'] = direction
+    
+    asset = context.user_data['asset']
+    price_info = await show_asset_price_in_realtime(asset)
+    
+    await SafeMessageSender.edit_message_text(
+        query,
+        f"✅ Направление: {direction}\n{price_info}"
+        "<b>Введите цену входа:</b>",
+        InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Назад", callback_data="mback_to_asset")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+        ])
+    )
+    return MultiTradeState.ENTRY.value
+
+async def multi_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Цена входа для мультипозиции"""
+    text = update.message.text.strip()
+    
+    # Save progress
+    DataManager.save_progress(update.message.from_user.id, context.user_data.copy(), "multi")
+    
+    try:
+        entry_price = float(text.replace(',', '.'))
+        if entry_price <= 0:
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Цена должна быть больше 0\nПопробуйте еще раз:",
+                context,
+                InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+                ])
+            )
+            return MultiTradeState.ENTRY.value
+        
+        context.user_data['entry_price'] = entry_price
+        
+        asset = context.user_data['asset']
+        price_info = await show_asset_price_in_realtime(asset)
+        
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            f"✅ Цена входа: {entry_price}\n{price_info}"
+            "<b>Введите уровень стоп-лосса:</b>",
+            context,
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
+        )
+        return MultiTradeState.STOP_LOSS.value
+        
+    except ValueError:
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Введите число (например: 50000)\nПопробуйте еще раз:",
+            context,
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
+        )
+        return MultiTradeState.ENTRY.value
+
+async def multi_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Стоп-лосс для мультипозиции"""
+    text = update.message.text.strip()
+    
+    # Save progress
+    DataManager.save_progress(update.message.from_user.id, context.user_data.copy(), "multi")
+    
+    try:
+        stop_loss = float(text.replace(',', '.'))
+        entry_price = context.user_data['entry_price']
+        direction = context.user_data['direction']
+        asset = context.user_data['asset']
+        
+        sl_amount = ProfessionalRiskCalculator.calculate_pnl_dollar_amount(
+            entry_price, stop_loss, 1.0, 1.0, direction, asset
+        )
+        
+        if direction == 'LONG' and stop_loss >= entry_price:
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Для LONG стоп-лосс должен быть НИЖЕ цены входа\nПопробуйте еще раз:",
+                context,
+                InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+                ])
+            )
+            return MultiTradeState.STOP_LOSS.value
+        elif direction == 'SHORT' and stop_loss <= entry_price:
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Для SHORT стоп-лосс должен быть ВЫШЕ цены входа\nПопробуйте еще раз:",
+                context,
+                InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+                ])
+            )
+            return MultiTradeState.STOP_LOSS.value
+        
+        context.user_data['stop_loss'] = stop_loss
+        
+        stop_distance_pips = ProfessionalRiskCalculator.calculate_pip_distance(entry_price, stop_loss, direction, asset)
+        
+        keyboard = []
+        for risk_level in RISK_LEVELS:
+            keyboard.append([InlineKeyboardButton(risk_level, callback_data=f"mrisk_{risk_level}")])
+        
+        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
+        
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            f"✅ Стоп-лосс: {stop_loss} ({stop_distance_pips:.0f} пунктов)\n"
+            f"💵 Сумма SL: ${abs(sl_amount):.2f}\n\n"
+            "<b>Выберите уровень риска:</b>",
+            context,
+            InlineKeyboardMarkup(keyboard)
+        )
+        return MultiTradeState.RISK_LEVEL.value
+        
+    except ValueError:
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Введите число (например: 48000)\nПопробуйте еще раз:",
+            context,
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
+        )
+        return MultiTradeState.STOP_LOSS.value
+
+async def multi_trade_risk_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Уровень риска для мультипозиции"""
+    query = update.callback_query
+    await SafeMessageSender.answer_callback_query(query)
+    
+    # Save progress
+    DataManager.save_progress(query.from_user.id, context.user_data.copy(), "multi")
+    
+    risk_level = query.data.replace('mrisk_', '')
+    context.user_data['risk_level'] = risk_level
+    
+    asset = context.user_data['asset']
+    price_info = await show_asset_price_in_realtime(asset)
+    
+    await SafeMessageSender.edit_message_text(
+        query,
+        f"✅ Уровень риска: {risk_level}\n{price_info}"
+        "<b>Введите уровень тейк-профита:</b>",
+        InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+        ])
+    )
+    return MultiTradeState.TAKE_PROFIT.value
+
+async def multi_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Тейк-профит для мультипозиции"""
+    text = update.message.text.strip()
+    
+    # Save progress
+    DataManager.save_progress(update.message.from_user.id, context.user_data.copy(), "multi")
+    
+    try:
+        take_profit = float(text.replace(',', '.'))
+        entry_price = context.user_data['entry_price']
+        direction = context.user_data['direction']
+        asset = context.user_data['asset']
+        
+        tp_amount = ProfessionalRiskCalculator.calculate_pnl_dollar_amount(
+            entry_price, take_profit, 1.0, 1.0, direction, asset
+        )
+        
+        if direction == 'LONG' and take_profit <= entry_price:
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Для LONG тейк-профит должен быть ВЫШЕ цены входа\nПопробуйте еще раз:",
+                context,
+                InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+                ])
+            )
+            return MultiTradeState.TAKE_PROFIT.value
+        elif direction == 'SHORT' and take_profit >= entry_price:
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Для SHORT тейк-профит должен быть НИЖЕ цены входа\nПопробуйте еще раз:",
+                context,
+                InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+                ])
+            )
+            return MultiTradeState.TAKE_PROFIT.value
+        
+        context.user_data['take_profit'] = take_profit
+        
+        # Create trade and add to current_multi_trades
+        trade = context.user_data.copy()
+        trade.pop('current_multi_trades', None)  # Clean up
+        context.user_data['current_multi_trades'].append(trade)
+        
+        # Calculate metrics for this trade
+        metrics = await ProfessionalRiskCalculator.calculate_professional_metrics(
+            trade, trade['deposit'], trade['leverage'], trade['risk_level']
+        )
+        trade['metrics'] = metrics
+        
+        sl_amount = ProfessionalRiskCalculator.calculate_pnl_dollar_amount(
+            trade['entry_price'], trade['stop_loss'], metrics['volume_lots'], 
+            metrics['pip_value'], trade['direction'], trade['asset']
+        )
+        
+        tp_amount = ProfessionalRiskCalculator.calculate_pnl_dollar_amount(
+            trade['entry_price'], trade['take_profit'], metrics['volume_lots'],
+            metrics['pip_value'], trade['direction'], trade['asset']
+        )
+        
+        text = (
+            f"✅ Сделка #{len(context.user_data['current_multi_trades'])} добавлена!\n\n"
+            f"Актив: {trade['asset']} | {trade['direction']}\n"
+            f"Вход: {trade['entry_price']} | SL: {trade['stop_loss']} (${abs(sl_amount):.2f})\n"
+            f"TP: {trade['take_profit']} (${tp_amount:.2f}) | Объем: {metrics['volume_lots']:.2f}\n"
+            f"Риск: ${metrics['risk_amount']:.2f}\n\n"
+            "<b>Добавить еще сделку или завершить?</b>"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("➕ Добавить сделку", callback_data="madd_more")],
+            [InlineKeyboardButton("✅ Завершить мультипозицию", callback_data="mfinish_multi")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+        ]
+        
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            text,
+            context,
+            InlineKeyboardMarkup(keyboard)
+        )
+        return MultiTradeState.ADD_MORE.value
+        
+    except ValueError:
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Введите число (например: 55000)\nПопробуйте еще раз:",
+            context,
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
+        )
+        return MultiTradeState.TAKE_PROFIT.value
+
+async def multi_trade_add_more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Добавление еще одной сделки в мультипозицию"""
+    query = update.callback_query
+    await SafeMessageSender.answer_callback_query(query)
+    
+    # Clear current trade data but keep current_multi_trades
+    current_multi = context.user_data.get('current_multi_trades', [])
+    context.user_data = {'current_multi_trades': current_multi}
+    
+    await multi_trade_leverage(update, context)  # Redirect to leverage for new trade
+    return MultiTradeState.LEVERAGE.value
+
+async def multi_trade_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Завершение мультипозиции и расчет портфеля"""
+    query = update.callback_query
+    await SafeMessageSender.answer_callback_query(query)
+    
+    user_id = query.from_user.id
+    current_multi = context.user_data.get('current_multi_trades', [])
+    
+    if not current_multi:
+        await SafeMessageSender.edit_message_text(
+            query,
+            "❌ Нет сделок для завершения",
+            InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]])
+        )
+        return ConversationHandler.END
+    
+    # Add to portfolio
+    PortfolioManager.ensure_user(user_id)
+    PortfolioManager.add_multi_trade(user_id, current_multi)
+    deposit = current_multi[0].get('deposit', 1000)
+    leverage = current_multi[0].get('leverage', '1:100')
+    PortfolioManager.set_deposit_leverage(user_id, deposit, leverage)
+    
+    # Calculate portfolio metrics
+    metrics = PortfolioAnalyzer.calculate_portfolio_metrics(current_multi, deposit)
+    recommendations = PortfolioAnalyzer.generate_enhanced_recommendations(metrics, current_multi)
+    
+    text = (
+        "📊 <b>МУЛЬТИПОЗИЦИЯ ЗАВЕРШЕНА v3.0</b>\n\n"
+        f"Сделок добавлено: {len(current_multi)}\n"
+        f"Депозит: ${deposit:,.2f} | Плечо: {leverage}\n\n"
+        f"💰 <b>ПОРТФЕЛЬНЫЕ ПОКАЗАТЕЛИ:</b>\n"
+        f"Общий риск: ${metrics['total_risk_usd']:.2f} ({metrics['total_risk_percent']:.1f}%)\n"
+        f"Потенциальная прибыль: ${metrics['total_profit']:.2f}\n"
+        f"Текущий P&L: ${metrics['total_pnl']:.2f}\n"
+        f"Equity: ${metrics['total_equity']:.2f}\n\n"
+        f"🛡 <b>МАРЖА:</b>\n"
+        f"Требуемая: ${metrics['total_margin']:.2f} ({metrics['total_margin_usage']:.1f}%)\n"
+        f"Свободная: ${metrics['free_margin']:.2f}\n"
+        f"Уровень маржи: {metrics['portfolio_margin_level']:.1f}%\n\n"
+        f"<b>💡 РЕКОМЕНДАЦИИ:</b>\n" + "\n".join(f"• {rec}" for rec in recommendations) + "\n\n"
+        "💎 PRO v3.0 | Smart • Fast • Reliable 🚀"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("📊 Полный портфель", callback_data="portfolio")],
+        [InlineKeyboardButton("📤 Экспорт отчета", callback_data="export_portfolio")],
+        [InlineKeyboardButton("🎯 Новая мультипозиция", callback_data="multi_trade_start")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+    ]
+    
+    await SafeMessageSender.edit_message_text(
+        query,
+        text,
+        InlineKeyboardMarkup(keyboard)
+    )
+    
+    DataManager.clear_temporary_progress(user_id)
+    context.user_data.clear()
+    return ConversationHandler.END
 
 # ---------------------------
 # CALLBACK ROUTER - ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ
@@ -2339,17 +2757,13 @@ async def callback_router_fixed(update: Update, context: ContextTypes.DEFAULT_TY
             await single_trade_start(update, context)
         elif data == "multi_trade_start":
             await multi_trade_start(update, context)
+        # Single Trade Callbacks
         elif data.startswith("asset_"):
             await enhanced_single_trade_asset(update, context)
         elif data.startswith("dir_"):
             await enhanced_single_trade_direction(update, context)
         elif data == "back_to_asset":
-            # Возврат к выбору актива
-            asset = context.user_data.get('asset')
-            if asset:
-                await enhanced_single_trade_asset(update, context)
-            else:
-                await single_trade_asset_category(update, context)
+            await enhanced_single_trade_asset(update, context)
         elif data.startswith("lev_"):
             await single_trade_leverage(update, context)
         elif data.startswith("cat_"):
@@ -2360,14 +2774,27 @@ async def callback_router_fixed(update: Update, context: ContextTypes.DEFAULT_TY
             await single_trade_leverage(update, context)
         elif data.startswith("risk_"):
             await single_trade_risk_level(update, context)
-        # Multi trade callbacks (with 'm' prefix)
+        # Multi Trade Callbacks
+        elif data.startswith("massset_"):
+            await enhanced_multi_trade_asset(update, context)
+        elif data.startswith("mdir_"):
+            await enhanced_multi_trade_direction(update, context)
+        elif data == "mback_to_asset":
+            await enhanced_multi_trade_asset(update, context)
         elif data.startswith("mlev_"):
             await multi_trade_leverage(update, context)
         elif data.startswith("mcat_"):
-            await multi_trade_asset_category(update, context)  # Assume defined
-        # ... (similar for other multi)
-        elif data == "add_more" or data == "finish_multi":
+            await multi_trade_asset_category(update, context)
+        elif data == "massset_manual":
+            await multi_trade_asset_category(update, context)
+        elif data == "mback_to_categories":
+            await multi_trade_leverage(update, context)
+        elif data.startswith("mrisk_"):
+            await multi_trade_risk_level(update, context)
+        elif data == "madd_more":
             await multi_trade_add_more(update, context)
+        elif data == "mfinish_multi":
+            await multi_trade_finish(update, context)
         else:
             await query.answer("Команда не распознана")
             
@@ -2401,10 +2828,15 @@ async def pro_calculation_handler(update: Update, context: ContextTypes.DEFAULT_
         InlineKeyboardMarkup(keyboard)
     )
 
+@retry_on_timeout(max_retries=2, delay=1.0)
 async def main_menu_save_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Главное меню"""
     query = update.callback_query
     await SafeMessageSender.answer_callback_query(query)
+    
+    # Clear progress on menu access
+    DataManager.clear_temporary_progress(query.from_user.id)
+    context.user_data.clear()
     
     text = "🏠 <b>ГЛАВНОЕ МЕНЮ</b>\n\nВыберите действие:"
     
@@ -2740,16 +3172,42 @@ def setup_conversation_handlers(application: Application):
                 CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
             MultiTradeState.ASSET_CATEGORY.value: [
-                CallbackQueryHandler(multi_trade_asset_category, pattern="^mcat_"),  # Assume defined
+                CallbackQueryHandler(multi_trade_asset_category, pattern="^(mcat_|massset_manual)"),
                 CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
-            # ... (similar for other states)
+            MultiTradeState.ASSET.value: [
+                CallbackQueryHandler(enhanced_multi_trade_asset, pattern="^(massset_|mback_to_categories)"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, multi_trade_asset_manual),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
+            ],
+            MultiTradeState.DIRECTION.value: [
+                CallbackQueryHandler(enhanced_multi_trade_direction, pattern="^mdir_"),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
+            ],
+            MultiTradeState.ENTRY.value: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, multi_trade_entry),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
+            ],
+            MultiTradeState.STOP_LOSS.value: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, multi_trade_stop_loss),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
+            ],
+            MultiTradeState.RISK_LEVEL.value: [
+                CallbackQueryHandler(multi_trade_risk_level, pattern="^mrisk_"),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
+            ],
+            MultiTradeState.TAKE_PROFIT.value: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, multi_trade_take_profit),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
+            ],
             MultiTradeState.ADD_MORE.value: [
-                CallbackQueryHandler(multi_trade_add_more, pattern="^(add_more|finish_multi)$")
+                CallbackQueryHandler(multi_trade_add_more, pattern="^madd_more$"),
+                CallbackQueryHandler(multi_trade_finish, pattern="^mfinish_multi$"),
+                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ]
         },
         fallbacks=[
-            CommandHandler("cancel", single_trade_cancel),
+            CommandHandler("cancel", single_trade_cancel),  # Shared cancel
             CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
         ],
         name="multi_trade_conversation"
@@ -2919,7 +3377,7 @@ async def main_enhanced():
 # ЗАПУСК ПРИЛОЖЕНИЯ
 # ---------------------------
 if __name__ == "__main__":
-    logger.info("🚀 ЗАПУСК 💎 PRO RISK CALCULATOR v3.0 ENTERPRISE EDITION")
+    logger.info("🚀 ЗАПУСК PRO RISK CALCULATOR v3.0 ENTERPRISE EDITION")
     logger.info("✅ ВСЕ КРИТИЧЕСКИЕ ОШИБКИ ИСПРАВЛЕНЫ")
     logger.info("🎯 ИСПРАВЛЕНЫ РАСЧЕТЫ МАРЖИ И ОБЪЕМА")
     logger.info("🔧 СИСТЕМА ГОТОВА К ПРОДАКШЕНУ")
@@ -2931,7 +3389,8 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
         try:
-            asyncio.run(enhanced_market_data.session.close() if enhanced_market_data.session else asyncio.sleep(0))
+            if enhanced_market_data.session:
+                await enhanced_market_data.session.close()
         except:
             pass
         raise
