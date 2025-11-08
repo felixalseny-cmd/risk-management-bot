@@ -445,16 +445,20 @@ class EnhancedMarketDataProvider:
             if not metal_code:
                 return None
                 
-            url = f"https://api.metals.live/v1/spot"  # Исправленный URL на HTTPS, предполагая правильный endpoint (проверьте документацию)
+            url = f"https://api.metalpriceapi.com/v1/latest?api_key={METALPRICE_API_KEY}&base=USD&currencies={metal_code}"
             
             async with session.get(url, timeout=10) as response:
                 if response.status == 200:
                     data = await response.json()
                     if data.get('success'):
-                        rate = data['rates'].get(metal_code)
+                        rate = data['rates'].get(f"USD{metal_code}")  # Use direct price if available (e.g., 'USDXAU')
                         if rate:
-                            # Metal Price API возвращает курс, нужно конвертировать
+                            return rate
+                        rate = data['rates'].get(metal_code)  # Fallback to inverse
+                        if rate:
                             return 1.0 / rate
+                else:
+                    logger.error(f"Metal Price API response error: {response.status}")
         except Exception as e:
             logger.error(f"Metal Price API error for {symbol}: {e}")
         return None
@@ -569,8 +573,8 @@ class EnhancedMarketDataProvider:
             logger.error(f"Finnhub API error for {symbol}: {e}")
         return None
     
-    def _get_fallback_price(self, symbol: str) -> float:
-        """АКТУАЛИЗИРОВАННЫЕ fallback цены при недоступности API (обновлено на 2025)"""
+    async def _get_fallback_price(self, symbol: str) -> float:
+        """АКТУАЛИЗИРОВАННЫЕ fallback цены при недоступности API (async version)"""
         current_prices = {
             # Forex (актуальные цены)
             'EURUSD': 1.05, 'GBPUSD': 1.25, 'USDJPY': 150.00, 'USDCHF': 0.90,
