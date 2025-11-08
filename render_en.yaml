@@ -1,16 +1,47 @@
 services:
   - type: web
-    name: risk-management-bot-en-pro
+    name: risk-management-bot-en-pro-v4
     env: python
     plan: free
+    region: frankfurt
     buildCommand: |
+      pip install --upgrade pip
       pip install -r requirements.txt
-      echo "✅ PRO Dependencies installed successfully"
+      echo "🚀 PRO v4.0 Dependencies installed successfully"
     startCommand: python bot_en.py
     envVars:
-      - key: TELEGRAM_BOT_TOKEN_EN
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: TELEGRAM_BOT_TOKEN
         value: 7835480792:AAFo7VckIQHLph1grNxknhAXH1_HWph-Q1o
-      - key: RENDER_EXTERNAL_URL_EN
+      - key: MONGODB_URI
+        value: mongodb+srv://felixalseny_db_user:kontraktaciA22@felix22.3nx1ibi.mongodb.net/risk_bot_pro?retryWrites=true&w=majority&appName=Felix22
+      - key: RENDER_EXTERNAL_URL
         value: https://risk-management-bot-en-pro.onrender.com
-    healthCheckPath: /
+      - key: ALPHA_VANTAGE_API_KEY
+        value: IWXWUKDQ005UD341
+      - key: BINANCE_API_KEY  
+        value: WN1ZSbg4cLN0VSOJs4LDufb1aOGe1VgYKBOLRCpmvPdN24PNP4hQXoTNhvyCbeQv
+      - key: BINANCE_SECRET_KEY
+        value: 0vMvRqCA9HtK0zpYjF7tgXrKlm48zS3XksRWKuCijznpIohZOoyEsOkBbOnOPZ1r
+      - key: FINNHUB_API_KEY
+        value: d45o60pr01qieo4r467gd45o60pr01qieo4r4680
+      - key: USDT_WALLET_ADDRESS
+        value: TVRGFPKVs1nN3fUXBTQfu5syTcmYGgADre
+      - key: TON_WALLET_ADDRESS
+        value: UQDpCH-pGSzp3zEkpJY1Wc46gaorw9K-7T9FX7gHTrthMWMj
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DEBUG
+        value: "False"
+      - key: WEBHOOK_URL
+        value: /webhook
+      - key: MAX_CONNECTIONS
+        value: "100"
+    healthCheckPath: /health
+    healthCheckTimeout: 120
     autoDeploy: true
+    disk:
+      name: logs
+      mountPath: /opt/render/project/src/logs
+      sizeGB: 1
