@@ -1,4 +1,4 @@
-# bot.py — PRO Risk Calculator v3.0 | ENTERPRISE EDITION - КРИТИЧЕСКИЕ ОШИБКИ ИСПРАВЛЕНЫ
+# bot_fixed.py — PRO Risk Calculator v3.0 | ENTERPRISE EDITION - БАГИ ИСПРАВЛЕНЫ
 import os
 import logging
 import asyncio
@@ -26,6 +26,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     ConversationHandler
 )
+from decimal import Decimal, ROUND_HALF_UP
 
 # --- Загрузка .env ---
 from dotenv import load_dotenv
@@ -962,10 +963,10 @@ class ProfessionalMarginCalculator:
         }
 
 # ---------------------------
-# Professional Risk Calculator - ИСПРАВЛЕННЫЙ
+# Professional Risk Calculator - ИСПРАВЛЕННЫЙ С ПРАВИЛЬНЫМ РАСЧЕТОМ ОБЪЕМА
 # ---------------------------
 class ProfessionalRiskCalculator:
-    """ИСПРАВЛЕННЫЙ калькулятор с реальными котировками"""
+    """ИСПРАВЛЕННЫЙ калькулятор с правильным расчетом объема по 2% правилу"""
     
     @staticmethod
     def calculate_pip_distance(entry: float, target: float, direction: str, asset: str) -> float:
@@ -1040,7 +1041,7 @@ class ProfessionalRiskCalculator:
     @staticmethod
     async def calculate_professional_metrics(trade: Dict, deposit: float, leverage: str, risk_level: str) -> Dict[str, Any]:
         """
-        ИСПРАВЛЕННЫЙ расчет с реальными котировками и маржой
+        ИСПРАВЛЕННЫЙ расчет с правильным определением объема по правилу 2%
         """
         try:
             asset = trade['asset']
@@ -1052,15 +1053,16 @@ class ProfessionalRiskCalculator:
             current_price = await enhanced_market_data.get_robust_real_time_price(asset)
             specs = InstrumentSpecs.get_specs(asset)
             
-            risk_percent = float(risk_level.strip('%'))
-            risk_amount = deposit * (risk_percent / 100)
+            # ФИКСИРОВАННЫЙ РИСК 2% согласно правилам риск-менеджмента
+            risk_percent = 0.02  # Фиксированные 2% вместо выбора пользователя
+            risk_amount = deposit * risk_percent
             
             stop_distance_pips = ProfessionalRiskCalculator.calculate_pip_distance(entry, stop_loss, direction, asset)
             profit_distance_pips = ProfessionalRiskCalculator.calculate_pip_distance(entry, take_profit, direction, asset)
             
             pip_value = specs['pip_value']
             
-            # ИСПРАВЛЕННЫЙ РАСЧЕТ ОБЪЕМА
+            # ПРАВИЛЬНЫЙ РАСЧЕТ ОБЪЕМА по формуле: Volume = Risk Amount / (Stop Distance * Pip Value)
             if stop_distance_pips > 0 and pip_value > 0:
                 volume_lots = risk_amount / (stop_distance_pips * pip_value)
                 # Округляем до шага объема
@@ -1400,7 +1402,7 @@ LEVERAGES = {
     "DEFAULT": ['1:1', '1:5', '1:10', '1:20', '1:50', '1:100']
 }
 
-RISK_LEVELS = ['2%', '5%', '7%', '10%', '15%', '20%', '25%']
+# УДАЛЕНО: RISK_LEVELS - теперь используется фиксированный риск 2%
 
 # Волатильность активов (ОБНОВЛЕННЫЕ ДАННЫЕ)
 VOLATILITY_DATA = {
@@ -1971,21 +1973,19 @@ async def single_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_T
         
         stop_distance_pips = ProfessionalRiskCalculator.calculate_pip_distance(entry_price, stop_loss, direction, asset)
         
-        keyboard = []
-        for risk_level in RISK_LEVELS:
-            keyboard.append([InlineKeyboardButton(risk_level, callback_data=f"risk_{risk_level}")])
-        
-        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
-        
+        # УДАЛЕНО: выбор уровня риска - теперь фиксированный 2%
         await SafeMessageSender.send_message(
             update.message.chat_id,
             f"✅ Стоп-лосс: {stop_loss} ({stop_distance_pips:.0f} пунктов)\n"
             f"💵 Сумма SL: ${abs(sl_amount):.2f}\n\n"
-            "<b>Выберите уровень риска:</b>",
+            "📊 <b>Уровень риска фиксированный: 2%</b>\n\n"
+            "<b>Введите уровень тейк-профита:</b>",
             context,
-            InlineKeyboardMarkup(keyboard)
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
         )
-        return SingleTradeState.RISK_LEVEL.value
+        return SingleTradeState.TAKE_PROFIT.value
         
     except ValueError:
         await SafeMessageSender.send_message(
@@ -1998,32 +1998,8 @@ async def single_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_T
         )
         return SingleTradeState.STOP_LOSS.value
 
-async def single_trade_risk_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка выбора уровня риска"""
-    query = update.callback_query
-    await SafeMessageSender.answer_callback_query(query)
-    
-    # Save progress
-    DataManager.save_progress(query.from_user.id, context.user_data.copy(), "single")
-    
-    risk_level = query.data.replace('risk_', '')
-    context.user_data['risk_level'] = risk_level
-    
-    asset = context.user_data['asset']
-    price_info = await show_asset_price_in_realtime(asset)
-    
-    await SafeMessageSender.edit_message_text(
-        query,
-        f"✅ Уровень риска: {risk_level}\n{price_info}"
-        "<b>Введите уровень тейк-профита:</b>",
-        InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
-        ])
-    )
-    return SingleTradeState.TAKE_PROFIT.value
-
 async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка тейк-профита и показ результатов с РЕАЛЬНЫМИ ДАННЫМИ"""
+    """Обработка тейк-профита и показ результатов с ПРАВИЛЬНЫМИ РАСЧЕТАМИ"""
     text = update.message.text.strip()
     
     # Save progress
@@ -2068,8 +2044,9 @@ async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT
         PortfolioManager.add_single_trade(user_id, trade)
         PortfolioManager.set_deposit_leverage(user_id, trade['deposit'], trade['leverage'])
         
+        # Используем фиксированный риск 2%
         metrics = await ProfessionalRiskCalculator.calculate_professional_metrics(
-            trade, trade['deposit'], trade['leverage'], trade['risk_level']
+            trade, trade['deposit'], trade['leverage'], "2%"
         )
         trade['metrics'] = metrics
         
@@ -2157,7 +2134,7 @@ async def single_trade_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 # ---------------------------
-# Multi Trade Handlers (Зеркало Single Trade с префиксом 'm')
+# Multi Trade Handlers - ИСПРАВЛЕННЫЕ С РАБОЧЕЙ КНОПКОЙ "ДОБАВИТЬ СДЕЛКУ"
 # ---------------------------
 @retry_on_timeout(max_retries=2, delay=1.0)
 async def multi_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2174,7 +2151,7 @@ async def multi_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     text = (
         "📊 <b>МУЛЬТИПОЗИЦИЯ v3.0</b>\n\n"
-        "Расчет нескольких сделок в портфеле.\n\n"
+        "Расчет нескольких сделок в портфеле с фиксированным риском 2% на сделку.\n\n"
         "<b>Введите ваш депозит в USD:</b>"
     )
     
@@ -2498,21 +2475,19 @@ async def multi_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_TY
         
         stop_distance_pips = ProfessionalRiskCalculator.calculate_pip_distance(entry_price, stop_loss, direction, asset)
         
-        keyboard = []
-        for risk_level in RISK_LEVELS:
-            keyboard.append([InlineKeyboardButton(risk_level, callback_data=f"mrisk_{risk_level}")])
-        
-        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
-        
+        # УДАЛЕНО: выбор уровня риска - теперь фиксированный 2%
         await SafeMessageSender.send_message(
             update.message.chat_id,
             f"✅ Стоп-лосс: {stop_loss} ({stop_distance_pips:.0f} пунктов)\n"
             f"💵 Сумма SL: ${abs(sl_amount):.2f}\n\n"
-            "<b>Выберите уровень риска:</b>",
+            "📊 <b>Уровень риска фиксированный: 2%</b>\n\n"
+            "<b>Введите уровень тейк-профита:</b>",
             context,
-            InlineKeyboardMarkup(keyboard)
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
         )
-        return MultiTradeState.RISK_LEVEL.value
+        return MultiTradeState.TAKE_PROFIT.value
         
     except ValueError:
         await SafeMessageSender.send_message(
@@ -2524,30 +2499,6 @@ async def multi_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_TY
             ])
         )
         return MultiTradeState.STOP_LOSS.value
-
-async def multi_trade_risk_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Уровень риска для мультипозиции"""
-    query = update.callback_query
-    await SafeMessageSender.answer_callback_query(query)
-    
-    # Save progress
-    DataManager.save_progress(query.from_user.id, context.user_data.copy(), "multi")
-    
-    risk_level = query.data.replace('mrisk_', '')
-    context.user_data['risk_level'] = risk_level
-    
-    asset = context.user_data['asset']
-    price_info = await show_asset_price_in_realtime(asset)
-    
-    await SafeMessageSender.edit_message_text(
-        query,
-        f"✅ Уровень риска: {risk_level}\n{price_info}"
-        "<b>Введите уровень тейк-профита:</b>",
-        InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
-        ])
-    )
-    return MultiTradeState.TAKE_PROFIT.value
 
 async def multi_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Тейк-профит для мультипозиции"""
@@ -2591,13 +2542,16 @@ async def multi_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_
         
         # Create trade and add to current_multi_trades
         trade = context.user_data.copy()
-        trade.pop('current_multi_trades', None)  # Clean up
+        # Remove temporary data before saving
+        trade.pop('current_multi_trades', None)
         context.user_data['current_multi_trades'].append(trade)
         
-        # Calculate metrics for this trade
+        # Calculate metrics for this trade with fixed 2% risk
         metrics = await ProfessionalRiskCalculator.calculate_professional_metrics(
-            trade, trade['deposit'], trade['leverage'], trade['risk_level']
+            trade, trade['deposit'], trade['leverage'], "2%"
         )
+        
+        # Update the trade with metrics
         trade['metrics'] = metrics
         
         sl_amount = ProfessionalRiskCalculator.calculate_pnl_dollar_amount(
@@ -2611,11 +2565,11 @@ async def multi_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_
         )
         
         text = (
-            f"✅ Сделка #{len(context.user_data['current_multi_trades'])} добавлена!\n\n"
+            f"✅ <b>Сделка #{len(context.user_data['current_multi_trades'])} добавлена!</b>\n\n"
             f"Актив: {trade['asset']} | {trade['direction']}\n"
             f"Вход: {trade['entry_price']} | SL: {trade['stop_loss']} (${abs(sl_amount):.2f})\n"
             f"TP: {trade['take_profit']} (${tp_amount:.2f}) | Объем: {metrics['volume_lots']:.2f}\n"
-            f"Риск: ${metrics['risk_amount']:.2f}\n\n"
+            f"Риск: ${metrics['risk_amount']:.2f} (2% от депозита)\n\n"
             "<b>Добавить еще сделку или завершить?</b>"
         )
         
@@ -2645,16 +2599,42 @@ async def multi_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_
         return MultiTradeState.TAKE_PROFIT.value
 
 async def multi_trade_add_more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Добавление еще одной сделки в мультипозицию"""
+    """Добавление еще одной сделки в мультипозицию - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
     query = update.callback_query
     await SafeMessageSender.answer_callback_query(query)
     
-    # Clear current trade data but keep current_multi_trades
+    # Сохраняем текущие сделки
     current_multi = context.user_data.get('current_multi_trades', [])
-    context.user_data = {'current_multi_trades': current_multi}
     
-    await multi_trade_leverage(update, context)  # Redirect to leverage for new trade
-    return MultiTradeState.LEVERAGE.value
+    # Очищаем user_data для новой сделки, но сохраняем deposit, leverage и current_multi_trades
+    deposit = context.user_data.get('deposit')
+    leverage = context.user_data.get('leverage')
+    
+    # Очищаем context.user_data для новой сделки
+    context.user_data.clear()
+    
+    # Восстанавливаем необходимые данные
+    context.user_data['deposit'] = deposit
+    context.user_data['leverage'] = leverage
+    context.user_data['current_multi_trades'] = current_multi
+    
+    # Save progress
+    DataManager.save_progress(query.from_user.id, context.user_data.copy(), "multi")
+    
+    keyboard = []
+    for category in ASSET_CATEGORIES.keys():
+        keyboard.append([InlineKeyboardButton(category, callback_data=f"mcat_{category}")])
+    
+    keyboard.append([InlineKeyboardButton("📝 Ввести актив вручную", callback_data="massset_manual")])
+    keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
+    
+    await SafeMessageSender.edit_message_text(
+        query,
+        f"✅ Добавлено сделок: {len(current_multi)}\n\n"
+        "<b>Выберите категорию актива для следующей сделки:</b>",
+        InlineKeyboardMarkup(keyboard)
+    )
+    return MultiTradeState.ASSET_CATEGORY.value
 
 async def multi_trade_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Завершение мультипозиции и расчет портфеля"""
@@ -2772,8 +2752,6 @@ async def callback_router_fixed(update: Update, context: ContextTypes.DEFAULT_TY
             await single_trade_asset_category(update, context)
         elif data == "back_to_categories":
             await single_trade_leverage(update, context)
-        elif data.startswith("risk_"):
-            await single_trade_risk_level(update, context)
         # Multi Trade Callbacks
         elif data.startswith("massset_"):
             await enhanced_multi_trade_asset(update, context)
@@ -2789,8 +2767,6 @@ async def callback_router_fixed(update: Update, context: ContextTypes.DEFAULT_TY
             await multi_trade_asset_category(update, context)
         elif data == "mback_to_categories":
             await multi_trade_leverage(update, context)
-        elif data.startswith("mrisk_"):
-            await multi_trade_risk_level(update, context)
         elif data == "madd_more":
             await multi_trade_add_more(update, context)
         elif data == "mfinish_multi":
@@ -2813,7 +2789,10 @@ async def pro_calculation_handler(update: Update, context: ContextTypes.DEFAULT_
     
     text = (
         "🎯 <b>ПРОФЕССИОНАЛЬНЫЕ СДЕЛКИ v3.0</b>\n\n"
-        "Выберите тип расчета:"
+        "Выберите тип расчета:\n\n"
+        "• <b>Одна сделка</b> - расчет для одной позиции\n"
+        "• <b>Мультипозиция</b> - расчет портфеля из нескольких сделок\n\n"
+        "<i>Во всех случаях используется фиксированный риск 2% на сделку</i>"
     )
     
     keyboard = [
@@ -2838,7 +2817,11 @@ async def main_menu_save_handler(update: Update, context: ContextTypes.DEFAULT_T
     DataManager.clear_temporary_progress(query.from_user.id)
     context.user_data.clear()
     
-    text = "🏠 <b>ГЛАВНОЕ МЕНЮ</b>\n\nВыберите действие:"
+    text = (
+        "🏠 <b>ГЛАВНОЕ МЕНЮ</b>\n\n"
+        "Профессиональный калькулятор риск-менеджмента с фиксированным риском 2%\n\n"
+        "Выберите действие:"
+    )
     
     keyboard = [
         [InlineKeyboardButton("🎯 Профессиональный расчет", callback_data="pro_calculation")],
@@ -2870,7 +2853,10 @@ async def show_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE, use
     trades = user_portfolio.get('multi_trades', []) + user_portfolio.get('single_trades', [])
     
     if not trades:
-        text = "📊 <b>Ваш портфель пуст</b>\n\nНачните с расчета сделки!"
+        text = (
+            "📊 <b>Ваш портфель пуст</b>\n\n"
+            "Начните с расчета сделки с фиксированным риском 2%!"
+        )
         keyboard = [
             [InlineKeyboardButton("🎯 Новая сделка", callback_data="single_trade")],
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
@@ -2896,7 +2882,7 @@ async def show_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE, use
     # Обновляем метрики с реальными ценами
     for trade in trades:
         metrics = await ProfessionalRiskCalculator.calculate_professional_metrics(
-            trade, deposit, user_portfolio['leverage'], trade['risk_level']
+            trade, deposit, user_portfolio['leverage'], "2%"
         )
         trade['metrics'] = metrics
     
@@ -3040,7 +3026,7 @@ async def export_portfolio_handler(update: Update, context: ContextTypes.DEFAULT
             )
             
             report += f"Объем: {metrics['volume_lots']:.2f} лотов\n"
-            report += f"Риск: ${metrics['risk_amount']:.2f}\n"
+            report += f"Риск: ${metrics['risk_amount']:.2f} (2% от депозита)\n"
             report += f"Маржа: ${metrics['required_margin']:.2f}\n"
             report += f"Прибыль: ${metrics['potential_profit']:.2f}\n"
             report += f"R/R: {metrics['rr_ratio']:.2f}\n"
@@ -3142,10 +3128,6 @@ def setup_conversation_handlers(application: Application):
                 MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_stop_loss),
                 CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
-            SingleTradeState.RISK_LEVEL.value: [
-                CallbackQueryHandler(single_trade_risk_level, pattern="^risk_"),
-                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
-            ],
             SingleTradeState.TAKE_PROFIT.value: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_take_profit),
                 CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
@@ -3190,10 +3172,6 @@ def setup_conversation_handlers(application: Application):
             ],
             MultiTradeState.STOP_LOSS.value: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, multi_trade_stop_loss),
-                CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
-            ],
-            MultiTradeState.RISK_LEVEL.value: [
-                CallbackQueryHandler(multi_trade_risk_level, pattern="^mrisk_"),
                 CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
             ],
             MultiTradeState.TAKE_PROFIT.value: [
@@ -3380,6 +3358,7 @@ async def cleanup_session():
     """Асинхронное закрытие сессии market data."""
     if enhanced_market_data.session and not enhanced_market_data.session.closed:
         await enhanced_market_data.session.close()
+
 if __name__ == "__main__":
     logger.info("🚀 ЗАПУСК PRO RISK CALCULATOR v3.0 ENTERPRISE EDITION")
     logger.info("✅ ВСЕ КРИТИЧЕСКИЕ ОШИБКИ ИСПРАВЛЕНЫ")
