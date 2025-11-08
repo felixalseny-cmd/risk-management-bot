@@ -1,13 +1,13 @@
 services:
   - type: web
-    name: risk-management-bot-pro-v3
+    name: risk-management-bot-pro-v4
     env: python
     plan: free
-    region: frankfurt  # Добавьте регион для лучшей производительности
+    region: frankfurt
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
-      echo "✅ PRO v3.0 Зависимости установлены успешно"
+      echo "🚀 PRO v4.0 Зависимости установлены успешно"
     startCommand: python bot.py
     envVars:
       - key: PYTHON_VERSION
@@ -34,8 +34,12 @@ services:
         value: INFO
       - key: DEBUG
         value: "False"
+      - key: WEBHOOK_URL
+        value: /webhook
+      - key: MAX_CONNECTIONS
+        value: "100"
     healthCheckPath: /health
-    healthCheckTimeout: 120  # Увеличим таймаут для health check
+    healthCheckTimeout: 120
     autoDeploy: true
     disk:
       name: logs
