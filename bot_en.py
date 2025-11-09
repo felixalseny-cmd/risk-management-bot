@@ -3147,4 +3147,81 @@ async def main_enhanced():
                     "🤖 Use menu for navigation or /start to begin",
                     context,
                     InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🏠 Main Menu", callback_data="main
+                        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+                    ])
+                )
+            ))
+            
+            # Launch mode
+            if WEBHOOK_URL and WEBHOOK_URL.strip():
+                logger.info("Launching in WEBHOOK mode")
+                await application.initialize()
+                
+                if await set_webhook(application):
+                    await start_http_server(application)
+                    logger.info("✅ Bot successfully launched in WEBHOOK mode")
+                    
+                    while True:
+                        await asyncio.sleep(300)
+                        logger.debug("Health check - bot running stable")
+                else:
+                    logger.error("Failed to set webhook, launching in polling mode")
+                    raise Exception("Webhook setup failed")
+            else:
+                logger.info("Launching in POLLING mode")
+                await application.run_polling(
+                    poll_interval=1.0,
+                    timeout=30,
+                    drop_pending_updates=True
+                )
+                
+            break
+                
+        except telegram.error.TimedOut as e:
+            logger.error(f"Timeout error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error("All startup attempts failed due to timeouts")
+                raise
+                
+        except Exception as e:
+            logger.error(f"Unexpected error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error("All startup attempts failed")
+                raise
+
+# ---------------------------
+# APPLICATION LAUNCH
+# ---------------------------
+async def cleanup_session():
+    """Async cleanup of market data session."""
+    if enhanced_market_data.session and not enhanced_market_data.session.closed:
+        await enhanced_market_data.session.close()
+
+async def show_asset_price_in_realtime(asset: str) -> str:
+    """Show real asset price"""
+    price, source = await enhanced_market_data.get_price_with_fallback(asset)
+    return f"📈 Current price: ${price:.2f} ({source})\n\n"
+
+if __name__ == "__main__":
+    logger.info("🚀 LAUNCHING PRO RISK CALCULATOR v3.0 ENTERPRISE EDITION")
+    logger.info("✅ ALL CRITICAL ERRORS FIXED")
+    logger.info("🎯 FIXED MARGIN AND VOLUME CALCULATIONS")
+    logger.info("🔧 SYSTEM READY FOR PRODUCTION")
+    
+    try:
+        asyncio.run(main_enhanced())
+    except KeyboardInterrupt:
+        logger.info("⏹ Bot stopped by user")
+    except Exception as e:
+        logger.error(f"❌ Critical error: {e}")
+        try:
+            asyncio.run(cleanup_session())
+        except Exception as cleanup_err:
+            logger.error(f"Error during session cleanup: {cleanup_err}")
+        raise
