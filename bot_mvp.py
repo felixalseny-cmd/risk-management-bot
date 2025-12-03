@@ -1,3 +1,4 @@
+# bot_mvp.py — PRO Risk Calculator MVP Phase 1
 import os
 import logging
 import asyncio
@@ -986,6 +987,7 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"❌ Critical error: {e}")
 
+# bot_mvp_phase2.py — PRO Risk Calculator MVP Phase 2
 import os
 import logging
 import asyncio
