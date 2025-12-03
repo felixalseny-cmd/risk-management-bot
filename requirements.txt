@@ -1,6 +1,11 @@
-python-telegram-bot==21.7
-python-dotenv==1.0.1
+# requirements.txt для MVP Phase 2
+python-telegram-bot==21.4
 aiohttp==3.9.5
-qrcode[pil]==7.4.2
-Pillow==10.3.0
-cachetools==5.3.3
+numpy==2.1.1
+numba==0.60.0
+cachetools==5.5.0
+python-dotenv==1.0.1
+matplotlib==3.9.2
+kaleido==0.2.1
+scipy==1.13.0
+psutil==5.9.8
