@@ -1,4 +1,3 @@
-# bot_mvp.py — PRO Risk Calculator MVP Phase 1
 import os
 import logging
 import asyncio
