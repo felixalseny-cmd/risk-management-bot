@@ -341,7 +341,7 @@ class MVPDataProvider:
     
     async def _get_fmp_price(self, symbol: str) -> Optional[float]:
     """Get price from Financial Modeling Prep"""
-    if not FMP_API_KEY:
+    if not FMP_API_KEY:nZm3b15R1rJvjnUO67wPb0eaJHPXarK2
         return None
     
     try:
