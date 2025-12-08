@@ -328,7 +328,7 @@ class MVPDataProvider:
         try:
             session = await self.get_session()
             binance_symbol = symbol.replace('USD', '') + 'USDT' if 'USD' in symbol else symbol
-            url = f"https://api.binance.com/api/v3/ticker/price?symbol={binance_symbol}"
+            url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?from=2024-01-01&to=2024-12-31&apikey={FMP_API_KEY}"
             
             async with session.get(url, timeout=5) as response:
                 if response.status == 200:
