@@ -1,14 +1,14 @@
 services:
   - type: web
-    name: risk-management-bot-en-pro-v4
+    name: risk-management-bot-mvp
     env: python
     plan: free
     region: frankfurt
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
-      echo "🚀 PRO v4.0 Dependencies installed successfully"
-    startCommand: python bot_en.py
+      echo "✅ MVP Phase 1 dependencies installed successfully"
+    startCommand: python bot_mvp.py
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
@@ -17,7 +17,7 @@ services:
       - key: MONGODB_URI
         value: mongodb+srv://felixalseny_db_user:kontraktaciA22@felix22.3nx1ibi.mongodb.net/risk_bot_pro?retryWrites=true&w=majority&appName=Felix22
       - key: RENDER_EXTERNAL_URL
-        value: https://risk-management-bot-en-pro.onrender.com
+        value: https://risk-management-bot-mvp.onrender.com
       - key: ALPHA_VANTAGE_API_KEY
         value: IWXWUKDQ005UD341
       - key: BINANCE_API_KEY  
@@ -34,8 +34,10 @@ services:
         value: INFO
       - key: DEBUG
         value: "False"
+      - key: PORT
+        value: "10000"
       - key: WEBHOOK_URL
-        value: /webhook
+        value: https://risk-management-bot-mvp.onrender.com/webhook
       - key: MAX_CONNECTIONS
         value: "100"
     healthCheckPath: /health
