@@ -883,9 +883,12 @@ async def donate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 If you find this bot useful, consider supporting its development:
 
 **USDT (TRC20):**
-    TVRGFPKVs1nN3fUXBTQfu5syTcmYGgADre
+
+TVRGFPKVs1nN3fUXBTQfu5syTcmYGgADre
+
 **TON:**
-    UQDpCH-pGSzp3zEkpJY1Wc46gaorw9K-7T9FX7gHTrthMWMj
+
+UQDpCH-pGSzp3zEkpJY1Wc46gaorw9K-7T9FX7gHTrthMWMj
     
 **Bitcoin (BTC):** Coming soon
 
