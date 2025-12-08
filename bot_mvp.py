@@ -32,7 +32,8 @@ if not TOKEN:
 
 PORT = int(os.getenv("PORT", 10000))
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", RENDER_EXTERNAL_URL + f"/webhook/{TOKEN}")
+WEBHOOK_BASE_URL = os.getenv("WEBHOOK_URL", RENDER_EXTERNAL_URL + "/webhook")
+WEBHOOK_URL = WEBHOOK_BASE_URL + f"/{TOKEN}"  # Полный URL с токеном
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 
 # API Keys
