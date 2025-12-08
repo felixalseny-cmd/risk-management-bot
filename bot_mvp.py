@@ -339,22 +339,23 @@ class MVPDataProvider:
         return None
     
     async def _get_fmp_price(self, symbol: str) -> Optional[float]:
-        """Get price from Financial Modeling Prep"""
-        if not FMP_API_KEY:
-            return None
-        
-        try:
-            session = await self.get_session()
-            url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={FMP_API_KEY}"
-            
-            async with session.get(url, timeout=5) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data and isinstance(data, list) and len(data) > 0:
-                        return data[0]['price']
-        except Exception as e:
-            logger.debug(f"FMP API error for {symbol}: {e}")
+    """Get price from Financial Modeling Prep"""
+    if not FMP_API_KEY:
         return None
+    
+    try:
+        session = await self.get_session()
+       
+        url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={FMP_API_KEY}"
+        
+        async with session.get(url, timeout=5) as response:
+            if response.status == 200:
+                data = await response.json()
+                if data and isinstance(data, list) and len(data) > 0:
+                    return data[0]['price']
+    except Exception as e:
+        logger.debug(f"FMP API error for {symbol}: {e}")
+    return None
     
     async def _get_frankfurter_price(self, symbol: str) -> Optional[float]:
         """Get Forex prices from Frankfurter"""
