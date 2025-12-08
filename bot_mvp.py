@@ -1,5 +1,12 @@
-# bot_mvp.py — PRO Risk Calculator MVP Phase 1
+#!/usr/bin/env python3
+"""
+bot_mvp.py - MVP Risk Calculator Telegram Bot
+Optimized for Render Free (512MB RAM)
+Phase 1: Core Stability
+"""
+
 import os
+import sys
 import logging
 import asyncio
 import time
@@ -9,7 +16,7 @@ import re
 import html
 import gc
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Tuple, Optional
+from typing import Dict, List, Any, Tuple, Optional, Union
 from enum import Enum
 from decimal import Decimal, ROUND_HALF_UP
 from collections import defaultdict
@@ -21,10 +28,11 @@ load_dotenv()
 # --- Configuration ---
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN not found!")
+    raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables!")
 
 PORT = int(os.getenv("PORT", 10000))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", RENDER_EXTERNAL_URL + f"/webhook/{TOKEN}")
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 
 # API Keys
@@ -48,11 +56,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger("risk_calculator_mvp")
 
+# Import optimization: Lazy imports for heavy modules
+def lazy_import(module_name):
+    """Lazy import helper"""
+    import importlib
+    return importlib.import_module(module_name)
+
 # ==================== PHASE 1: CORE STABILITY ====================
 # 1. Fixed imports and startup
 # 2. Basic data provider with caching
 # 3. Core risk calculations (VaR, CVaR, MDD)
 # 4. Simple Telegram commands
+# 5. Optimized for 512MB RAM
 
 # ---------------------------
 # Performance Monitoring Decorator
@@ -65,7 +80,7 @@ def monitor_performance(func):
         try:
             result = await func(*args, **kwargs)
             elapsed = time.time() - start_time
-            if elapsed > 1.0:  # Log slow operations
+            if elapsed > 1.0:
                 logger.warning(f"Slow operation: {func.__name__} took {elapsed:.2f}s")
             return result
         except Exception as e:
@@ -79,7 +94,7 @@ def monitor_performance(func):
         try:
             result = func(*args, **kwargs)
             elapsed = time.time() - start_time
-            if elapsed > 1.0:  # Log slow operations
+            if elapsed > 1.0:
                 logger.warning(f"Slow operation: {func.__name__} took {elapsed:.2f}s")
             return result
         except Exception as e:
@@ -102,7 +117,7 @@ class MemoryGuardian:
     def get_memory_usage():
         """Get current memory usage in MB"""
         try:
-            import psutil
+            psutil = lazy_import("psutil")
             process = psutil.Process()
             return process.memory_info().rss / 1024 / 1024  # MB
         except ImportError:
@@ -117,7 +132,6 @@ class MemoryGuardian:
                 if hasattr(cache, '__len__'):
                     items_to_remove = int(len(cache) * percent)
                     if items_to_remove > 0:
-                        # Simple strategy: clear based on insertion order
                         keys = list(cache.keys())[:items_to_remove]
                         for key in keys:
                             cache.pop(key, None)
@@ -133,12 +147,10 @@ class MemoryGuardian:
             if memory_usage > MemoryGuardian.MEMORY_THRESHOLD:
                 logger.warning(f"Memory usage high: {memory_usage:.1f}MB, clearing cache")
                 
-                # Clear global caches
                 if cache_objects:
                     for cache_obj in cache_objects:
                         MemoryGuardian.clear_oldest_cache(cache_obj, MemoryGuardian.CACHE_CLEAR_PERCENT)
                 
-                # Force garbage collection
                 gc.collect()
                 
                 new_usage = MemoryGuardian.get_memory_usage()
@@ -170,7 +182,7 @@ class CircuitBreaker:
         
         if self.failure_count >= self.max_failures:
             self.state = "OPEN"
-            logger.warning(f"Circuit breaker OPEN for API after {self.failure_count} failures")
+            logger.warning(f"Circuit breaker OPEN after {self.failure_count} failures")
     
     def record_success(self):
         """Record an API success"""
@@ -183,7 +195,6 @@ class CircuitBreaker:
             return True
         
         elif self.state == "OPEN":
-            # Check if reset timeout has passed
             if time.time() - self.last_failure_time > self.reset_timeout:
                 self.state = "HALF_OPEN"
                 logger.info("Circuit breaker moving to HALF_OPEN state")
@@ -191,7 +202,6 @@ class CircuitBreaker:
             return False
         
         elif self.state == "HALF_OPEN":
-            # Allow one trial call
             return True
         
         return False
@@ -203,8 +213,8 @@ class MVPDataProvider:
     """Optimized data provider with circuit breakers and caching"""
     
     def __init__(self):
-        import cachetools
-        self.cache = cachetools.TTLCache(maxsize=200, ttl=600)  # 10 minute cache
+        cachetools = lazy_import("cachetools")
+        self.cache = cachetools.TTLCache(maxsize=100, ttl=600)  # 10 minute cache, reduced size
         self.session = None
         self.circuit_breakers = defaultdict(lambda: CircuitBreaker())
         self.api_priority = [
@@ -217,7 +227,7 @@ class MVPDataProvider:
     async def get_session(self):
         """Get or create aiohttp session"""
         if self.session is None or self.session.closed:
-            import aiohttp
+            aiohttp = lazy_import("aiohttp")
             self.session = aiohttp.ClientSession()
         return self.session
     
@@ -232,7 +242,7 @@ class MVPDataProvider:
         
         # Check circuit breaker for this symbol
         if not self.circuit_breakers[symbol].can_execute():
-            logger.warning(f"Circuit breaker blocked for {symbol}, using cache/fallback")
+            logger.warning(f"Circuit breaker blocked for {symbol}, using fallback")
             return self._get_fallback_price(symbol)
         
         # Try APIs in priority order
@@ -280,37 +290,32 @@ class MVPDataProvider:
     async def get_returns(self, symbol: str, period: int = 30) -> List[float]:
         """Get historical returns (simplified - using mock data for MVP)"""
         # For MVP, we'll generate simulated returns
-        # In PRO phase, this will use actual historical data
-        import numpy as np
+        np = lazy_import("numpy")
         np.random.seed(hash(symbol) % 10000)
         
         # Generate realistic returns based on asset type
         if any(c in symbol for c in ['BTC', 'ETH', 'XRP']):
-            # Crypto: high volatility
-            returns = np.random.normal(0.001, 0.04, period).tolist()  # 4% daily volatility
+            returns = np.random.normal(0.001, 0.04, period).tolist()
         elif any(c in symbol for c in ['AAPL', 'TSLA', 'GOOG']):
-            # Stocks: medium volatility
-            returns = np.random.normal(0.0005, 0.02, period).tolist()  # 2% daily volatility
+            returns = np.random.normal(0.0005, 0.02, period).tolist()
         elif any(c in symbol for c in ['EUR', 'GBP', 'JPY']):
-            # Forex: low volatility
-            returns = np.random.normal(0.0001, 0.008, period).tolist()  # 0.8% daily volatility
+            returns = np.random.normal(0.0001, 0.008, period).tolist()
         else:
-            # Default
             returns = np.random.normal(0.0003, 0.015, period).tolist()
         
         return returns
     
     def get_volatility(self, returns: List[float], annualize: bool = True) -> float:
         """Calculate volatility from returns"""
-        import numpy as np
         if len(returns) < 2:
             return 0.0
         
+        np = lazy_import("numpy")
         returns_array = np.array(returns)
         daily_vol = np.std(returns_array)
         
         if annualize:
-            return daily_vol * np.sqrt(252)  # Trading days
+            return daily_vol * np.sqrt(252)
         return daily_vol
     
     # API implementations
@@ -321,7 +326,6 @@ class MVPDataProvider:
         
         try:
             session = await self.get_session()
-            # Format: BTCUSDT -> BTCUSDT, ETHUSDT -> ETHUSDT
             binance_symbol = symbol.replace('USD', '') + 'USDT' if 'USD' in symbol else symbol
             url = f"https://api.binance.com/api/v3/ticker/price?symbol={binance_symbol}"
             
@@ -354,7 +358,6 @@ class MVPDataProvider:
     async def _get_frankfurter_price(self, symbol: str) -> Optional[float]:
         """Get Forex prices from Frankfurter"""
         try:
-            # Check if it's a Forex pair (6 characters like EURUSD)
             if len(symbol) == 6 and symbol.isalpha():
                 from_curr = symbol[:3]
                 to_curr = symbol[3:]
@@ -406,21 +409,20 @@ class MVPRiskEngine:
         if not returns:
             return 0.0
         
-        import numpy as np
+        np = lazy_import("numpy")
         returns_array = np.array(returns)
         var_percentile = np.percentile(returns_array, (1 - confidence) * 100)
-        return abs(var_percentile)  # Return as positive loss
+        return abs(var_percentile)
     
     @staticmethod
     @monitor_performance
     def parametric_var(mean_return: float, volatility: float, confidence: float = 0.95) -> float:
         """Parametric (Normal) Value at Risk"""
-        import numpy as np
         from scipy.stats import norm
         
         z_score = norm.ppf(confidence)
         var = mean_return - z_score * volatility
-        return abs(var)  # Return as positive loss
+        return abs(var)
     
     @staticmethod
     @monitor_performance
@@ -429,11 +431,10 @@ class MVPRiskEngine:
         if not returns:
             return 0.0
         
-        import numpy as np
+        np = lazy_import("numpy")
         returns_array = np.array(returns)
         var_threshold = np.percentile(returns_array, (1 - confidence) * 100)
         
-        # Average of losses beyond VaR
         losses_beyond_var = returns_array[returns_array <= var_threshold]
         if len(losses_beyond_var) == 0:
             return abs(var_threshold)
@@ -448,18 +449,13 @@ class MVPRiskEngine:
         if len(prices) < 2:
             return 0.0
         
-        import numpy as np
+        np = lazy_import("numpy")
         prices_array = np.array(prices)
         
-        # Calculate cumulative max
         cumulative_max = np.maximum.accumulate(prices_array)
-        
-        # Calculate drawdown
         drawdown = (prices_array - cumulative_max) / cumulative_max
-        
-        # Maximum drawdown (most negative)
         max_dd = np.min(drawdown)
-        return abs(max_dd)  # Return as positive percentage
+        return abs(max_dd)
     
     @staticmethod
     @monitor_performance
@@ -468,17 +464,16 @@ class MVPRiskEngine:
         if len(returns) < 2:
             return 0.0
         
-        import numpy as np
+        np = lazy_import("numpy")
         returns_array = np.array(returns)
         
-        excess_returns = returns_array - (risk_free_rate / 252)  # Daily risk-free rate
+        excess_returns = returns_array - (risk_free_rate / 252)
         mean_excess = np.mean(excess_returns)
         std_excess = np.std(excess_returns)
         
         if std_excess == 0:
             return 0.0
         
-        # Annualize
         sharpe = (mean_excess / std_excess) * np.sqrt(252)
         return sharpe
     
@@ -489,13 +484,12 @@ class MVPRiskEngine:
         if len(returns) < 2:
             return 0.0
         
-        import numpy as np
+        np = lazy_import("numpy")
         returns_array = np.array(returns)
         
         excess_returns = returns_array - (risk_free_rate / 252)
         mean_excess = np.mean(excess_returns)
         
-        # Downside deviation (only negative returns)
         negative_returns = returns_array[returns_array < 0]
         if len(negative_returns) == 0:
             return 0.0
@@ -505,7 +499,6 @@ class MVPRiskEngine:
         if downside_std == 0:
             return 0.0
         
-        # Annualize
         sortino = (mean_excess / downside_std) * np.sqrt(252)
         return sortino
     
@@ -519,15 +512,13 @@ class MVPRiskEngine:
         simulations: int = 1000
     ) -> Tuple[List[float], List[List[float]]]:
         """Monte Carlo simulation with path sampling"""
-        import numpy as np
+        np = lazy_import("numpy")
         
-        # For MVP, we limit simulations to save memory
-        simulations = min(simulations, 1000)
+        simulations = min(simulations, 1000)  # Limit for memory
         
-        dt = 1/252  # Daily steps
+        dt = 1/252
         prices = np.zeros((simulations, days))
         
-        # Generate all random numbers at once for efficiency
         random_shocks = np.random.normal(0, 1, (simulations, days))
         
         for t in range(days):
@@ -538,10 +529,8 @@ class MVPRiskEngine:
                 diffusion = volatility * np.sqrt(dt) * random_shocks[:, t]
                 prices[:, t] = prices[:, t-1] * np.exp(drift + diffusion)
         
-        # Final prices
         final_prices = prices[:, -1].tolist()
         
-        # Sample only 5% of paths for memory efficiency
         sample_size = max(1, int(simulations * 0.05))
         sample_indices = np.random.choice(simulations, sample_size, replace=False)
         sample_paths = prices[sample_indices, :].tolist()
@@ -557,19 +546,18 @@ class MVPStressTester:
     @staticmethod
     def crisis_2008(portfolio_value: float, asset_allocation: Dict[str, float]) -> Dict[str, Any]:
         """2008 Financial Crisis scenario"""
-        # Historical crisis impacts
         crisis_impacts = {
-            'stocks': -0.50,      # -50% for stocks
-            'indices': -0.45,     # -45% for indices
-            'crypto': -0.60,      # -60% for crypto (though crypto wasn't big in 2008)
-            'forex': -0.15,       # -15% for forex (USD safe haven)
-            'metals': 0.25,       # +25% for gold (safe haven)
-            'energy': -0.40       # -40% for oil
+            'stocks': -0.50,
+            'indices': -0.45,
+            'crypto': -0.60,
+            'forex': -0.15,
+            'metals': 0.25,
+            'energy': -0.40
         }
         
         total_impact = 0.0
         for asset_type, allocation in asset_allocation.items():
-            impact = crisis_impacts.get(asset_type, -0.30)  # -30% default
+            impact = crisis_impacts.get(asset_type, -0.30)
             total_impact += impact * allocation
         
         stressed_value = portfolio_value * (1 + total_impact)
@@ -587,12 +575,12 @@ class MVPStressTester:
     def covid_2020(portfolio_value: float, asset_allocation: Dict[str, float]) -> Dict[str, Any]:
         """COVID-19 Crash scenario"""
         covid_impacts = {
-            'stocks': -0.35,      # -35% for stocks
-            'indices': -0.30,     # -30% for indices
-            'crypto': -0.50,      # -50% for crypto
-            'forex': -0.10,       # -10% for forex
-            'metals': 0.15,       # +15% for gold
-            'energy': -0.60       # -60% for oil
+            'stocks': -0.35,
+            'indices': -0.30,
+            'crypto': -0.50,
+            'forex': -0.10,
+            'metals': 0.15,
+            'energy': -0.60
         }
         
         total_impact = 0.0
@@ -613,10 +601,9 @@ class MVPStressTester:
     @staticmethod
     def crypto_winter_2022(portfolio_value: float, crypto_allocation: float) -> Dict[str, Any]:
         """Crypto Winter 2022 scenario"""
-        crypto_impact = -0.75  # -75% for crypto assets
-        non_crypto_impact = -0.20  # -20% for everything else
+        crypto_impact = -0.75
+        non_crypto_impact = -0.20
         
-        # Simple: if portfolio has crypto, apply crypto winter
         total_impact = (crypto_impact * crypto_allocation) + (non_crypto_impact * (1 - crypto_allocation))
         stressed_value = portfolio_value * (1 + total_impact)
         
@@ -649,7 +636,7 @@ class MVPAlertManager:
             'type': 'price',
             'symbol': symbol,
             'target_price': target_price,
-            'condition': condition,  # 'above' or 'below'
+            'condition': condition,
             'triggered': False,
             'created_at': datetime.now().isoformat()
         }
@@ -729,7 +716,6 @@ class MVPAlertManager:
         """Save alerts to file"""
         try:
             with open(filename, 'w') as f:
-                # Convert datetime objects to strings
                 serializable = {}
                 for user_id, user_alerts in self.alerts.items():
                     serializable[str(user_id)] = user_alerts
@@ -752,8 +738,16 @@ class MVPAlertManager:
 # ---------------------------
 # Telegram Bot Setup
 # ---------------------------
-# Note: We'll implement the Telegram bot in the next phase
-# For now, we create the core components
+# Note: Basic bot setup for Phase 1
+# In Phase 2, we'll add full Telegram integration
+
+try:
+    from telegram import Update
+    from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+    TELEGRAM_AVAILABLE = True
+except ImportError:
+    TELEGRAM_AVAILABLE = False
+    logger.warning("python-telegram-bot not available. Telegram features disabled.")
 
 # Global instances
 data_provider = MVPDataProvider()
@@ -765,14 +759,144 @@ alert_manager = MVPAlertManager()
 alert_manager.load_from_file()
 
 # ---------------------------
+# Telegram Handlers
+# ---------------------------
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command"""
+    await update.message.reply_text(
+        "🚀 **Risk Management Bot MVP**\n\n"
+        "Welcome! I can help you with:\n"
+        "• Risk analysis for assets\n"
+        "• VaR calculations\n"
+        "• Monte Carlo simulations\n"
+        "• Stress testing\n\n"
+        "Commands:\n"
+        "/risk [symbol] - Analyze asset risk\n"
+        "/price [symbol] - Get current price\n"
+        "/health - Check bot status\n"
+        "/help - Show all commands"
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /help command"""
+    help_text = """
+📋 **Available Commands:**
+
+**Analysis:**
+/risk [symbol] - Comprehensive risk analysis
+/price [symbol] - Get current price
+/var [symbol] - Calculate Value at Risk
+
+**Stress Testing:**
+/stress [portfolio_value] - Run stress tests
+
+**Alerts:**
+/alert price [symbol] [condition] [price] - Set price alert
+/alerts list - List your alerts
+/alerts delete [id] - Delete alert
+
+**System:**
+/health - System health check
+/stats - Performance statistics
+
+**Donations:**
+/donate - Support development
+
+**Examples:**
+/risk BTCUSDT
+/price AAPL
+/alert price BTCUSDT above 110000
+/stress 10000
+"""
+    await update.message.reply_text(help_text)
+
+async def risk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /risk command"""
+    if not context.args:
+        await update.message.reply_text("Please provide a symbol. Example: /risk BTCUSDT")
+        return
+    
+    symbol = context.args[0].upper()
+    
+    # Send processing message
+    processing_msg = await update.message.reply_text(f"📊 Analyzing {symbol}...")
+    
+    try:
+        # Calculate risk metrics
+        risk_data = await calculate_asset_risk(symbol)
+        report = format_risk_report(risk_data)
+        
+        # Send report
+        await update.message.reply_text(report, parse_mode='Markdown')
+        await processing_msg.delete()
+        
+    except Exception as e:
+        logger.error(f"Error in risk command: {e}")
+        await update.message.reply_text(f"❌ Error analyzing {symbol}: {str(e)}")
+        await processing_msg.delete()
+
+async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /price command"""
+    if not context.args:
+        await update.message.reply_text("Please provide a symbol. Example: /price BTCUSDT")
+        return
+    
+    symbol = context.args[0].upper()
+    
+    try:
+        price = await data_provider.get_price(symbol)
+        await update.message.reply_text(f"💰 **{symbol}**: ${price:.2f}")
+    except Exception as e:
+        logger.error(f"Error in price command: {e}")
+        await update.message.reply_text(f"❌ Error getting price for {symbol}: {str(e)}")
+
+async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /health command"""
+    health_data = await health_check()
+    
+    status_emoji = "✅" if health_data["status"] == "healthy" else "⚠️" if health_data["status"] == "warning" else "❌"
+    
+    message = f"{status_emoji} **Bot Health Status**\n\n"
+    message += f"**Status**: {health_data['status']}\n"
+    message += f"**Version**: {health_data['version']}\n"
+    message += f"**Uptime**: {health_data.get('uptime_seconds', 0):.0f}s\n"
+    
+    if 'memory_usage_mb' in health_data:
+        message += f"**Memory Usage**: {health_data['memory_usage_mb']:.1f}MB\n"
+    
+    if 'services' in health_data:
+        message += "\n**Services**:\n"
+        for service, info in health_data['services'].items():
+            status = info.get('status', 'unknown')
+            emoji = "🟢" if status == 'operational' else "🟡" if status == 'degraded' else "🔴"
+            message += f"{emoji} {service}: {status}\n"
+    
+    await update.message.reply_text(message, parse_mode='Markdown')
+
+async def donate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /donate command"""
+    donate_text = """
+🙏 **Support Development**
+
+If you find this bot useful, consider supporting its development:
+
+**USDT (TRC20):**
+    TVRGFPKVs1nN3fUXBTQfu5syTcmYGgADre
+**TON:**
+    UQDpCH-pGSzp3zEkpJY1Wc46gaorw9K-7T9FX7gHTrthMWMj
+    
+**Bitcoin (BTC):** Coming soon
+
+Your support helps maintain and improve the bot!
+"""
+    await update.message.reply_text(donate_text)
+
+# ---------------------------
 # Utility Functions
 # ---------------------------
 async def calculate_asset_risk(symbol: str, period: int = 30) -> Dict[str, Any]:
     """Calculate comprehensive risk metrics for an asset"""
-    # Get current price
     current_price = await data_provider.get_price(symbol)
-    
-    # Get historical returns
     returns = await data_provider.get_returns(symbol, period)
     
     if not returns or len(returns) < 5:
@@ -783,38 +907,31 @@ async def calculate_asset_risk(symbol: str, period: int = 30) -> Dict[str, Any]:
             'period': period
         }
     
-    # Calculate metrics
-    import numpy as np
+    np = lazy_import("numpy")
     returns_array = np.array(returns)
     
     mean_return = np.mean(returns_array)
     volatility = data_provider.get_volatility(returns)
     annual_volatility = data_provider.get_volatility(returns, annualize=True)
     
-    # Risk metrics
     historical_var_95 = risk_engine.historical_var(returns, 0.95)
     historical_var_99 = risk_engine.historical_var(returns, 0.99)
     parametric_var_95 = risk_engine.parametric_var(mean_return, volatility, 0.95)
     conditional_var_95 = risk_engine.conditional_var(returns, 0.95)
     
-    # Sharpe and Sortino
     sharpe = risk_engine.sharpe_ratio(returns)
     sortino = risk_engine.sortino_ratio(returns)
     
-    # Generate price history for drawdown
-    # Simulate prices from returns
     prices = [current_price]
-    for ret in reversed(returns[-30:]):  # Last 30 days
+    for ret in reversed(returns[-30:]):
         prices.insert(0, prices[0] / (1 + ret))
     
     max_dd = risk_engine.max_drawdown(prices)
     
-    # Monte Carlo simulation
     final_prices, sample_paths = risk_engine.monte_carlo_simulation(
         current_price, mean_return, volatility, days=30, simulations=500
     )
     
-    # Calculate VaR from Monte Carlo
     mc_returns = [(fp - current_price) / current_price for fp in final_prices]
     mc_var_95 = risk_engine.historical_var(mc_returns, 0.95)
     
@@ -822,7 +939,7 @@ async def calculate_asset_risk(symbol: str, period: int = 30) -> Dict[str, Any]:
         'symbol': symbol,
         'current_price': round(current_price, 2),
         'period': period,
-        'mean_return': round(mean_return * 100, 3),  # Percentage
+        'mean_return': round(mean_return * 100, 3),
         'daily_volatility': round(volatility * 100, 3),
         'annual_volatility': round(annual_volatility * 100, 2),
         'historical_var_95': round(historical_var_95 * 100, 3),
@@ -887,8 +1004,9 @@ async def health_check() -> Dict[str, Any]:
     health = {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "MVP 1.0",
+        "version": "MVP Phase 1",
         "python_version": sys.version.split()[0],
+        "uptime_seconds": time.time() - start_time if 'start_time' in globals() else 0,
         "services": {}
     }
     
@@ -902,7 +1020,7 @@ async def health_check() -> Dict[str, Any]:
     except Exception as e:
         health["services"]["data_provider"] = {
             "status": "error",
-            "error": str(e)
+            "error": str(e)[:100]
         }
         health["status"] = "degraded"
     
@@ -911,7 +1029,7 @@ async def health_check() -> Dict[str, Any]:
         memory_usage = MemoryGuardian.get_memory_usage()
         health["memory_usage_mb"] = round(memory_usage, 1)
         health["services"]["memory"] = {
-            "status": "good" if memory_usage < 300 else "warning",
+            "status": "good" if memory_usage < 350 else "warning",
             "usage_mb": round(memory_usage, 1)
         }
         
@@ -920,18 +1038,149 @@ async def health_check() -> Dict[str, Any]:
     except Exception as e:
         health["services"]["memory"] = {
             "status": "error",
-            "error": str(e)
+            "error": str(e)[:100]
         }
+    
+    # Check Telegram availability
+    health["services"]["telegram"] = {
+        "status": "available" if TELEGRAM_AVAILABLE else "unavailable"
+    }
     
     return health
 
 # ---------------------------
+# Webhook Setup (for Render)
+# ---------------------------
+async def handle_webhook(request):
+    """Handle webhook requests from Telegram"""
+    if not TELEGRAM_AVAILABLE:
+        return
+    
+    from telegram import Update
+    from telegram.ext import ContextTypes
+    
+    try:
+        data = await request.json()
+        update = Update.de_json(data, application.bot)
+        
+        await application.initialize()
+        await application.process_update(update)
+        
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return {"status": "error", "message": str(e)}
+
+# ---------------------------
+# HTTP Server for Health Checks
+# ---------------------------
+from aiohttp import web
+
+async def http_health_check(request):
+    """HTTP health check endpoint"""
+    health_data = await health_check()
+    return web.json_response(health_data)
+
+async def http_main_page(request):
+    """Main HTTP page"""
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Risk Management Bot MVP</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+            .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            h1 { color: #333; }
+            .status { padding: 10px; border-radius: 5px; margin: 20px 0; }
+            .healthy { background: #d4edda; color: #155724; }
+            .warning { background: #fff3cd; color: #856404; }
+            .error { background: #f8d7da; color: #721c24; }
+            .endpoints { margin-top: 30px; }
+            .endpoint { background: #f8f9fa; padding: 15px; margin: 10px 0; border-radius: 5px; }
+            code { background: #eee; padding: 2px 5px; border-radius: 3px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🚀 Risk Management Bot MVP</h1>
+            <p>Telegram bot for financial risk analysis and management.</p>
+            
+            <div class="status healthy">
+                <strong>Status:</strong> Running
+            </div>
+            
+            <div class="endpoints">
+                <h3>API Endpoints:</h3>
+                <div class="endpoint">
+                    <strong>GET</strong> <code>/health</code> - Health check
+                </div>
+                <div class="endpoint">
+                    <strong>POST</strong> <code>/webhook/{token}</code> - Telegram webhook
+                </div>
+            </div>
+            
+            <p style="margin-top: 30px; font-size: 0.9em; color: #666;">
+                Version: MVP Phase 1 | Running on Render Free
+            </p>
+        </div>
+    </body>
+    </html>
+    """
+    return web.Response(text=html_content, content_type='text/html')
+
+# ---------------------------
 # Main Application
 # ---------------------------
+async def setup_telegram_bot():
+    """Setup Telegram bot handlers"""
+    if not TELEGRAM_AVAILABLE:
+        logger.warning("Telegram bot not available. Skipping Telegram setup.")
+        return None
+    
+    try:
+        application = Application.builder().token(TOKEN).build()
+        
+        # Add command handlers
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("risk", risk_command))
+        application.add_handler(CommandHandler("price", price_command))
+        application.add_handler(CommandHandler("health", health_command))
+        application.add_handler(CommandHandler("donate", donate_command))
+        
+        # Add message handler
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, 
+                                             lambda update, context: update.message.reply_text("Use /help to see available commands")))
+        
+        return application
+    except Exception as e:
+        logger.error(f"Failed to setup Telegram bot: {e}")
+        return None
+
+async def setup_http_server():
+    """Setup HTTP server for health checks"""
+    app = web.Application()
+    app.router.add_get('/', http_main_page)
+    app.router.add_get('/health', http_health_check)
+    
+    if TELEGRAM_AVAILABLE and WEBHOOK_URL:
+        app.router.add_post(f'/webhook/{TOKEN}', handle_webhook)
+    
+    return app
+
 async def main():
     """Main application entry point"""
+    global start_time
+    start_time = time.time()
+    
     logger.info("🚀 Launching MVP Risk Calculator - Phase 1")
-    logger.info("✅ Core stability components initialized")
+    logger.info(f"Telegram Bot Token: {TOKEN[:10]}...")
+    logger.info(f"Webhook URL: {WEBHOOK_URL}")
+    
+    # Initialize components
+    logger.info("Initializing components...")
     
     # Test the system
     try:
@@ -960,20 +1209,53 @@ async def main():
         
         logger.info("✅ MVP Phase 1 components are working!")
         
-        # Keep running for webhook mode
-        if WEBHOOK_URL:
-            logger.info("🌐 Webhook mode would start here")
-            # In Phase 2, we'll add the actual web server
-        else:
-            logger.info("🔄 Polling mode would start here")
-            # In Phase 2, we'll add the actual bot polling
-            
     except Exception as e:
         logger.error(f"❌ Startup error: {e}")
+        return
     
+    # Setup Telegram bot
+    telegram_app = await setup_telegram_bot()
+    
+    # Setup HTTP server
+    http_app = await setup_http_server()
+    runner = web.AppRunner(http_app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    
+    logger.info(f"Starting HTTP server on port {PORT}...")
+    await site.start()
+    
+    if telegram_app and WEBHOOK_URL:
+        # Set webhook for Telegram
+        try:
+            await telegram_app.bot.set_webhook(WEBHOOK_URL)
+            logger.info(f"Webhook set to: {WEBHOOK_URL}")
+        except Exception as e:
+            logger.error(f"Failed to set webhook: {e}")
+    
+    # Keep running
+    logger.info("✅ Bot is now running!")
+    logger.info(f"Health endpoint: http://0.0.0.0:{PORT}/health")
+    
+    try:
+        # Run forever
+        while True:
+            # Periodic memory check
+            MemoryGuardian.check_and_clear([data_provider.cache])
+            
+            # Sleep for 60 seconds
+            await asyncio.sleep(60)
+            
+    except KeyboardInterrupt:
+        logger.info("⏹ Bot stopped by user")
+    except Exception as e:
+        logger.error(f"❌ Critical error: {e}")
     finally:
         # Cleanup
         await data_provider.cleanup()
+        if telegram_app:
+            await telegram_app.shutdown()
+        await runner.cleanup()
         logger.info("🧹 Cleanup completed")
 
 # ---------------------------
