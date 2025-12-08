@@ -20,6 +20,7 @@ from typing import Dict, List, Any, Tuple, Optional, Union
 from enum import Enum
 from decimal import Decimal, ROUND_HALF_UP
 from collections import defaultdict
+from aiohttp import web
 
 # --- Load .env ---
 from dotenv import load_dotenv
@@ -33,7 +34,7 @@ if not TOKEN:
 PORT = int(os.getenv("PORT", 10000))
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_URL", RENDER_EXTERNAL_URL + "/webhook")
-WEBHOOK_URL = WEBHOOK_BASE_URL + f"/{TOKEN}"  # Полный URL с токеном
+WEBHOOK_URL = WEBHOOK_BASE_URL + f"/{TOKEN}" 
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 
 # API Keys
