@@ -20,7 +20,6 @@ from typing import Dict, List, Any, Tuple, Optional, Union
 from enum import Enum
 from decimal import Decimal, ROUND_HALF_UP
 from collections import defaultdict
-from aiohttp import web
 
 # --- Load .env ---
 from dotenv import load_dotenv
@@ -34,7 +33,7 @@ if not TOKEN:
 PORT = int(os.getenv("PORT", 10000))
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_URL", RENDER_EXTERNAL_URL + "/webhook")
-WEBHOOK_URL = WEBHOOK_BASE_URL + f"/{TOKEN}" 
+WEBHOOK_URL = WEBHOOK_BASE_URL + f"/{TOKEN}"
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 
 # API Keys
@@ -329,7 +328,7 @@ class MVPDataProvider:
         try:
             session = await self.get_session()
             binance_symbol = symbol.replace('USD', '') + 'USDT' if 'USD' in symbol else symbol
-            url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?from=2024-01-01&to=2024-12-31&apikey={FMP_API_KEY}"
+            url = f"https://api.binance.com/api/v3/ticker/price?symbol={binance_symbol}"
             
             async with session.get(url, timeout=5) as response:
                 if response.status == 200:
@@ -339,7 +338,7 @@ class MVPDataProvider:
             logger.debug(f"Binance API error for {symbol}: {e}")
         return None
     
-        async def _get_fmp_price(self, symbol: str) -> Optional[float]:
+    async def _get_fmp_price(self, symbol: str) -> Optional[float]:
         """Get price from Financial Modeling Prep"""
         if not FMP_API_KEY:
             return None
@@ -883,13 +882,12 @@ async def donate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 If you find this bot useful, consider supporting its development:
 
 **USDT (TRC20):**
+ TVRGFPKVs1nN3fUXBTQfu5syTcmYGgADre  
 
-TVRGFPKVs1nN3fUXBTQfu5syTcmYGgADre
+  **TON:**
+  UQDpCH-pGSzp3zEkpJY1Wc46gaorw9K-7T9FX7gHTrthMWMj
 
-**TON:**
-
-UQDpCH-pGSzp3zEkpJY1Wc46gaorw9K-7T9FX7gHTrthMWMj
-    
+  
 **Bitcoin (BTC):** Coming soon
 
 Your support helps maintain and improve the bot!
@@ -1273,3 +1271,4 @@ if __name__ == "__main__":
         logger.info("⏹ Application stopped by user")
     except Exception as e:
         logger.error(f"❌ Critical error: {e}")
+  
