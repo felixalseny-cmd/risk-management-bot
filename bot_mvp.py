@@ -373,7 +373,7 @@ class MVPDataProvider:
             logger.debug(f"Frankfurter API error for {symbol}: {e}")
         return None
     
-    def _get_fallback_price(self, symbol: str) -> float:
+    async def _get_fallback_price(self, symbol: str) -> float:
         """Static fallback prices"""
         fallback_prices = {
             # Forex
