@@ -8,7 +8,7 @@ services:
       pip install --upgrade pip
       pip install -r requirements.txt
       echo "🚀 PRO v4.0 Зависимости установлены успешно"
-    startCommand: python bot.py
+    startCommand: python bot_fixed_v3.0_final.py
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
@@ -45,3 +45,4 @@ services:
       name: logs
       mountPath: /opt/render/project/src/logs
       sizeGB: 1
+
