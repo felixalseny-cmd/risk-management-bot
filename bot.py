@@ -3116,7 +3116,7 @@ async def start_http_server(application: Application):
     
     # Обработчик вебхука
     async def handle_webhook(request):
-        if request.match_info.get('token') == TOKEN:
+        if request.path == f"/webhook/{TOKEN}" or request.path == f"/webhook/{TOKEN}/":
             data = await request.json()
             update = Update.de_json(data, application.bot)
             await application.process_update(update)
