@@ -1773,8 +1773,20 @@ async def get_category_keyboard(category: str, is_single: bool = True) -> Inline
         manual_text = "📝 Другой актив"
         back_callback = "back_to_asset"
     
-    prefix = "" if is_single else "m"
-    keyboard.append([InlineKeyboardButton(manual_text, callback_data=f"{prefix}asset_manual")])
+    if is_single:
+        manual_callback = "asset_manual"
+        if back_callback == "back_to_categories":
+            back_callback = "back_to_categories"
+        else:
+            back_callback = "back_to_asset"
+    else:
+        manual_callback = "massset_manual"
+        if back_callback == "back_to_categories":
+            back_callback = "mback_to_categories"
+        else:
+            back_callback = "mback_to_asset"
+    
+    keyboard.append([InlineKeyboardButton(manual_text, callback_data=manual_callback)])
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=back_callback)])
     keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
     
@@ -1791,11 +1803,19 @@ async def get_subcategory_keyboard(category: str, subcategory: str, is_single: b
     
     for asset in assets:
         prefix = "asset_" if is_single else "massset_"
-        keyboard.append([InlineKeyboardButton(asset, callback_data=f"{prefix}{asset}"])
+        keyboard.append([InlineKeyboardButton(asset, callback_data=f"{prefix}{asset}")])  # ИСПРАВЛЕНО
     
-    prefix = "s_" if is_single else "m_"
-    keyboard.append([InlineKeyboardButton("🔙 К подкатегориям", callback_data=f"{prefix}cat_{category}")])
-    keyboard.append([InlineKeyboardButton("📝 Ввести актив вручную", callback_data=f"{prefix}asset_manual")])
+    if is_single:
+        prefix = "s_"
+        manual_callback = "asset_manual"
+        back_callback = f"{prefix}cat_{category}"
+    else:
+        prefix = "m_"
+        manual_callback = "massset_manual"
+        back_callback = f"{prefix}cat_{category}"
+    
+    keyboard.append([InlineKeyboardButton("🔙 К подкатегориям", callback_data=back_callback)])
+    keyboard.append([InlineKeyboardButton("📝 Ввести актив вручную", callback_data=manual_callback)])
     keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
     
     return InlineKeyboardMarkup(keyboard)
@@ -1849,6 +1869,8 @@ async def callback_router_fixed(update: Update, context: ContextTypes.DEFAULT_TY
             await enhanced_single_trade_direction(update, context)
         elif data == "back_to_asset":
             await enhanced_single_trade_asset(update, context)
+        elif data == "back_to_categories":
+            await single_trade_leverage(update, context)
         elif data.startswith("lev_"):
             await single_trade_leverage(update, context)
         elif data.startswith("cat_"):
@@ -1856,9 +1878,18 @@ async def callback_router_fixed(update: Update, context: ContextTypes.DEFAULT_TY
         elif data.startswith("s_subcat_"):
             await single_trade_asset_subcategory(update, context)
         elif data == "asset_manual":
-            await single_trade_asset_category(update, context)
-        elif data == "back_to_categories":
-            await single_trade_leverage(update, context)
+            # Для ручного ввода нужно перейти к запросу актива
+            await SafeMessageSender.edit_message_text(
+                query,
+                "Шаг 5/8: ✍️ Введите название актива (например: BTCUSDT):",
+                InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Назад", callback_data="back_to_categories")],
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+                ])
+            )
+            # Нужно сохранить состояние, что мы ждем ручной ввод
+            context.user_data['waiting_for_manual_asset'] = True
+            return SingleTradeState.ASSET.value
         
         # Мультисделки
         elif data.startswith("massset_"):
@@ -1874,7 +1905,17 @@ async def callback_router_fixed(update: Update, context: ContextTypes.DEFAULT_TY
         elif data.startswith("m_subcat_"):
             await multi_trade_asset_subcategory(update, context)
         elif data == "massset_manual":
-            await multi_trade_asset_category(update, context)
+            # Аналогично для мультисделок
+            await SafeMessageSender.edit_message_text(
+                query,
+                "Шаг 5/9: ✍️ Введите название актива (например: BTCUSDT):",
+                InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Назад", callback_data="mback_to_categories")],
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+                ])
+            )
+            context.user_data['waiting_for_manual_asset'] = True
+            return MultiTradeState.ASSET.value
         elif data == "mback_to_categories":
             await multi_trade_leverage(update, context)
         elif data == "madd_more":
@@ -1887,7 +1928,6 @@ async def callback_router_fixed(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.error(f"Error in callback router: {e}")
         await query.answer("❌ Произошла ошибка")
-
 # ---------------------------
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (остаются без изменений)
 # ---------------------------
