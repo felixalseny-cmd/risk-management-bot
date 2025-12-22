@@ -225,7 +225,7 @@ class SafeMessageSender:
             return False
 
 # ---------------------------
-# DONATION SYSTEM (без изменений)
+# DONATION SYSTEM
 # ---------------------------
 class DonationSystem:
     """Профессиональная система донатов"""
@@ -397,7 +397,7 @@ class EnhancedMarketDataProvider:
     async def _get_fmp_price_fixed(self, symbol: str) -> Optional[Decimal]:
         """ИСПРАВЛЕННЫЙ метод получения цены через FMP API с правильным &apikey"""
         if not FMP_API_KEY:
-            logger.warning("FMP_API_KEY не установлен")
+            logger.warning("FMP_API_KEY не установен")
             return None
             
         try:
@@ -434,7 +434,6 @@ class EnhancedMarketDataProvider:
             session = await self.get_session()
             
             # ИСПРАВЛЕНИЕ: Правильное добавление параметра apikey
-            # Если в URL уже есть параметры (например, для нескольких тикеров), используем &apikey=
             base_url = f"https://financialmodelingprep.com/api/v3/quote/{fmp_symbol}"
             
             # Проверяем, есть ли уже параметры в fmp_symbol
@@ -721,6 +720,435 @@ class EnhancedMarketDataProvider:
             logger.error(f"Error getting price for {symbol}: {e}")
             fallback_price = await self._get_fallback_price(symbol)
             return fallback_price, "error"
+
+# ---------------------------
+# PIVOT ANALYZER - TAAPI.IO И OANDA API ИНТЕГРАЦИЯ
+# ---------------------------
+class PivotAnalyzer:
+    """Анализатор Pivot уровней через TAAPI.IO и OANDA API"""
+    
+    def __init__(self):
+        self.session = None
+        self.pivot_cache = cachetools.TTLCache(maxsize=200, ttl=3600)
+        
+    async def get_session(self):
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
+        return self.session
+    
+    async def calculate_pivot_levels_taapi(self, symbol: str, timeframe: str = "4h") -> Dict[str, Any]:
+        """Расчет Pivot уровней через TAAPI.IO"""
+        try:
+            cache_key = f"{symbol}_{timeframe}"
+            cached = self.pivot_cache.get(cache_key)
+            if cached:
+                return cached
+            
+            if not TAAPI_API_KEY:
+                logger.warning("TAAPI_API_KEY не установлен")
+                return None
+            
+            session = await self.get_session()
+            
+            # Определяем тип актива для TAAPI
+            exchange = "BINANCE"
+            if self._is_forex(symbol):
+                exchange = "FX"
+            elif self._is_crypto(symbol):
+                exchange = "BINANCE"
+            
+            # Получаем свечные данные
+            url = f"https://api.taapi.io/pivotpoints"
+            params = {
+                'secret': TAAPI_API_KEY,
+                'exchange': exchange,
+                'symbol': symbol,
+                'interval': timeframe,
+                'period': 20  # Используем 20 периодов для расчета
+            }
+            
+            async with session.get(url, params=params, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    
+                    # TAAPI возвращает pivot уровни в структурированном виде
+                    pivot_levels = {
+                        'pivot': data.get('pivot', 0),
+                        'r1': data.get('r1', 0),
+                        'r2': data.get('r2', 0),
+                        'r3': data.get('r3', 0),
+                        's1': data.get('s1', 0),
+                        's2': data.get('s2', 0),
+                        's3': data.get('s3', 0),
+                        'source': 'taapi',
+                        'timeframe': timeframe
+                    }
+                    
+                    self.pivot_cache[cache_key] = pivot_levels
+                    return pivot_levels
+                else:
+                    logger.error(f"TAAPI API error: {response.status}")
+                    return None
+                    
+        except Exception as e:
+            logger.error(f"Ошибка TAAPI API для {symbol}: {e}")
+            return None
+    
+    async def calculate_pivot_levels_oanda(self, symbol: str, timeframe: str = "H4") -> Dict[str, Any]:
+        """Расчет Pivot уровней через OANDA API"""
+        try:
+            cache_key = f"oanda_{symbol}_{timeframe}"
+            cached = self.pivot_cache.get(cache_key)
+            if cached:
+                return cached
+            
+            if not OANDA_API_KEY:
+                logger.warning("OANDA_API_KEY не установлен")
+                return None
+            
+            # Конвертируем символ в формат OANDA (если нужно)
+            oanda_symbol = self._convert_to_oanda_symbol(symbol)
+            if not oanda_symbol:
+                return None
+            
+            session = await self.get_session()
+            
+            # Получаем исторические данные
+            url = f"https://api-fxtrade.oanda.com/v3/instruments/{oanda_symbol}/candles"
+            headers = {
+                'Authorization': f'Bearer {OANDA_API_KEY}',
+                'Accept-Datetime-Format': 'RFC3339'
+            }
+            
+            params = {
+                'price': 'M',
+                'granularity': timeframe,
+                'count': 100  # Получаем 100 свечей для расчета
+            }
+            
+            async with session.get(url, headers=headers, params=params, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    
+                    if 'candles' in data and len(data['candles']) > 0:
+                        # Рассчитываем Pivot уровни на основе High, Low, Close
+                        candles = data['candles']
+                        
+                        # Берем последнюю полную свечу для расчета
+                        last_candle = None
+                        for candle in reversed(candles):
+                            if candle['complete']:
+                                last_candle = candle
+                                break
+                        
+                        if last_candle:
+                            high = float(last_candle['mid']['h'])
+                            low = float(last_candle['mid']['l'])
+                            close = float(last_candle['mid']['c'])
+                            
+                            # Классический расчет Pivot уровней
+                            pivot = (high + low + close) / 3
+                            r1 = (2 * pivot) - low
+                            r2 = pivot + (high - low)
+                            r3 = high + 2 * (pivot - low)
+                            s1 = (2 * pivot) - high
+                            s2 = pivot - (high - low)
+                            s3 = low - 2 * (high - pivot)
+                            
+                            pivot_levels = {
+                                'pivot': pivot,
+                                'r1': r1,
+                                'r2': r2,
+                                'r3': r3,
+                                's1': s1,
+                                's2': s2,
+                                's3': s3,
+                                'source': 'oanda',
+                                'timeframe': timeframe
+                            }
+                            
+                            self.pivot_cache[cache_key] = pivot_levels
+                            return pivot_levels
+                            
+                else:
+                    logger.error(f"OANDA API error: {response.status}")
+                    return None
+                    
+        except Exception as e:
+            logger.error(f"Ошибка OANDA API для {symbol}: {e}")
+            return None
+    
+    async def get_pivot_levels(self, symbol: str) -> Dict[str, Dict[str, float]]:
+        """Получение Pivot уровней для H4 и Weekly"""
+        try:
+            # Пробуем разные источники в порядке приоритета
+            h4_levels = await self.calculate_pivot_levels_taapi(symbol, "4h")
+            if not h4_levels:
+                h4_levels = await self.calculate_pivot_levels_oanda(symbol, "H4")
+            
+            weekly_levels = await self.calculate_pivot_levels_taapi(symbol, "1w")
+            if not weekly_levels:
+                weekly_levels = await self.calculate_pivot_levels_oanda(symbol, "W")
+            
+            # Если не удалось получить уровни, используем расчет на основе текущей цены
+            if not h4_levels:
+                current_price = await enhanced_market_data.get_real_time_price(symbol)
+                if current_price:
+                    h4_levels = self._calculate_simple_pivot(current_price, "H4")
+            
+            if not weekly_levels:
+                current_price = await enhanced_market_data.get_real_time_price(symbol)
+                if current_price:
+                    weekly_levels = self._calculate_simple_pivot(current_price, "WEEKLY")
+            
+            return {
+                'H4': h4_levels or {},
+                'WEEKLY': weekly_levels or {}
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения Pivot уровней для {symbol}: {e}")
+            return {'H4': {}, 'WEEKLY': {}}
+    
+    def _calculate_simple_pivot(self, current_price: Decimal, timeframe: str) -> Dict[str, Any]:
+        """Простой расчет Pivot на основе текущей цены (запасной вариант)"""
+        price = float(current_price)
+        
+        # Базовая логика расчета (можно улучшить)
+        pivot = price
+        r1 = price * 1.01
+        r2 = price * 1.02
+        r3 = price * 1.03
+        s1 = price * 0.99
+        s2 = price * 0.98
+        s3 = price * 0.97
+        
+        return {
+            'pivot': pivot,
+            'r1': r1,
+            'r2': r2,
+            'r3': r3,
+            's1': s1,
+            's2': s2,
+            's3': s3,
+            'source': 'calculated',
+            'timeframe': timeframe
+        }
+    
+    def _is_forex(self, symbol: str) -> bool:
+        """Проверка является ли актив Forex парой"""
+        if len(symbol) == 6 and symbol[:3].isalpha() and symbol[3:].isalpha():
+            return True
+        return False
+    
+    def _is_crypto(self, symbol: str) -> bool:
+        """Проверка является ли актив криптовалютой"""
+        crypto_symbols = ['BTC', 'ETH', 'XRP', 'LTC', 'BCH', 'ADA', 'DOT', 'USDT', 'SOL', 'BNB']
+        return any(crypto in symbol for crypto in crypto_symbols)
+    
+    def _convert_to_oanda_symbol(self, symbol: str) -> Optional[str]:
+        """Конвертация символа в формат OANDA"""
+        if self._is_forex(symbol):
+            # OANDA использует формат с подчеркиванием для Forex
+            return f"{symbol[:3]}_{symbol[3:]}"
+        return None
+    
+    @staticmethod
+    def format_pivot_display(pivot_levels: Dict, timeframe: str) -> str:
+        """Форматирование Pivot уровней для отображения"""
+        if not pivot_levels:
+            return f"▪️ {timeframe} Pivot: данные недоступны\n"
+        
+        source_emoji = "🤖" if pivot_levels.get('source') == 'taapi' else "🏦" if pivot_levels.get('source') == 'oanda' else "🧮"
+        
+        text = f"▪️ {timeframe} Pivot {source_emoji} {pivot_levels.get('pivot', 0):.2f}\n"
+        text += f"   ▪️ R1  {pivot_levels.get('r1', 0):.2f} | S1 {pivot_levels.get('s1', 0):.2f}\n"
+        text += f"   ▪️ R2  {pivot_levels.get('r2', 0):.2f} | S2 {pivot_levels.get('s2', 0):.2f}\n"
+        text += f"   ▪️ R3  {pivot_levels.get('r3', 0):.2f} | S3 {pivot_levels.get('s3', 0):.2f}\n"
+        
+        return text
+
+# ---------------------------
+# ENHANCED VOL SCORE ANALYZER (с реальными данными)
+# ---------------------------
+class EnhancedVolScoreAnalyzer:
+    """Улучшенный анализатор Vol Score с историческими данными"""
+    
+    def __init__(self):
+        self.session = None
+        self.vol_cache = cachetools.TTLCache(maxsize=200, ttl=1800)
+        
+    async def get_session(self):
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
+        return self.session
+    
+    async def calculate_vol_score(self, symbol: str) -> Tuple[int, str]:
+        """Расчет Vol Score на основе исторической волатильности"""
+        try:
+            cache_key = f"vol_score_{symbol}"
+            cached = self.vol_cache.get(cache_key)
+            if cached:
+                return cached
+            
+            # Получаем исторические данные через FMP API
+            historical_data = await self._get_historical_data(symbol)
+            
+            if historical_data and len(historical_data) >= 20:
+                # Рассчитываем волатильность на основе 20-дневных данных
+                closes = [float(day['close']) for day in historical_data[:20]]
+                
+                if len(closes) >= 2:
+                    # Расчет стандартного отклонения
+                    import statistics
+                    returns = []
+                    for i in range(1, len(closes)):
+                        ret = (closes[i] - closes[i-1]) / closes[i-1]
+                        returns.append(ret)
+                    
+                    if returns:
+                        std_dev = statistics.stdev(returns)
+                        annualized_vol = std_dev * (252 ** 0.5)  # Годовая волатильность
+                        
+                        # Нормализуем до 0-100%
+                        # Базовые уровни: 10% = низкая, 30% = средняя, 50%+ = высокая
+                        base_score = min(annualized_vol * 200, 100)  # Преобразуем в процент
+                        vol_score = int(base_score)
+                        
+                        # Регулируем на основе типа актива
+                        if EnhancedVolScoreAnalyzer._is_high_vol_asset(symbol):
+                            vol_score = min(vol_score + 15, 100)
+                        elif EnhancedVolScoreAnalyzer._is_low_vol_asset(symbol):
+                            vol_score = max(vol_score - 10, 0)
+                        
+                        # Определяем эмодзи
+                        if vol_score >= 70:
+                            emoji = "🔴"
+                        elif vol_score >= 40:
+                            emoji = "🟡"
+                        else:
+                            emoji = "🟢"
+                        
+                        result = (vol_score, emoji)
+                        self.vol_cache[cache_key] = result
+                        return result
+            
+            # Fallback на статические данные
+            return await self._get_fallback_vol_score(symbol)
+            
+        except Exception as e:
+            logger.error(f"Ошибка расчета Vol Score для {symbol}: {e}")
+            return await self._get_fallback_vol_score(symbol)
+    
+    async def _get_historical_data(self, symbol: str) -> Optional[List[Dict]]:
+        """Получение исторических данных через FMP API"""
+        try:
+            if not FMP_API_KEY:
+                return None
+            
+            session = await self.get_session()
+            
+            # Маппинг символов для FMP
+            symbol_mapping = {
+                'BTCUSDT': 'BTCUSD',
+                'ETHUSDT': 'ETHUSD',
+                'XAUUSD': 'XAU',
+                'XAGUSD': 'XAG',
+            }
+            
+            fmp_symbol = symbol_mapping.get(symbol, symbol)
+            
+            url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{fmp_symbol}?apikey={FMP_API_KEY}&serietype=line"
+            
+            async with session.get(url, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get('historical', [])[:20]  # Берем последние 20 дней
+                else:
+                    return None
+                    
+        except Exception as e:
+            logger.error(f"Ошибка получения исторических данных для {symbol}: {e}")
+            return None
+    
+    async def _get_fallback_vol_score(self, symbol: str) -> Tuple[int, str]:
+        """Резервный расчет Vol Score"""
+        # Статические данные для основных активов
+        vol_scores = {
+            # Forex - Мажоры (низкая волатильность)
+            'EURUSD': 35, 'GBPUSD': 45, 'USDJPY': 40, 'USDCHF': 38,
+            'AUDUSD': 50, 'USDCAD': 42, 'NZDUSD': 48,
+            
+            # Forex - Миноры (средняя волатильность)
+            'EURGBP': 30, 'EURJPY': 55, 'EURCHF': 32, 'EURAUD': 60,
+            'EURCAD': 45, 'EURNZD': 62, 'GBPAUD': 58, 'GBPCAD': 48,
+            'GBPJPY': 65, 'GBPCHF': 40, 'GBPNZD': 68, 'AUDJPY': 52,
+            'AUDCAD': 44, 'AUDCHF': 36, 'AUDNZD': 55, 'CADJPY': 46,
+            'CHFJPY': 42, 'NZDJPY': 58, 'NZDCAD': 43, 'NZDCHF': 35,
+            
+            # Crypto (высокая волатильность)
+            'BTCUSDT': 82, 'ETHUSDT': 78, 'SOLUSDT': 88, 'XRPUSDT': 72,
+            'LTCUSDT': 68, 'ADAUSDT': 75, 'DOTUSDT': 70, 'BNBUSDT': 74,
+            
+            # Stocks (средняя волатильность)
+            'AAPL': 42, 'TSLA': 85, 'NVDA': 65, 'MSFT': 38,
+            'GOOGL': 40, 'AMZN': 45, 'META': 50, 'NFLX': 55,
+            
+            # Indices (низкая волатильность)
+            'SPX500': 28, 'US500': 28, 'NAS100': 35, 'DJ30': 25,
+            'US30': 25, 'RUT': 40, 'US2000': 40,
+            
+            # Metals (средняя волатильность)
+            'XAUUSD': 32, 'XAGUSD': 55, 'XPTUSD': 48, 'XPDUSD': 52,
+            'GOLD': 32, 'SILVER': 55,
+            
+            # Energy (высокая волатильность)
+            'OIL': 75, 'BRENT': 72, 'NATURALGAS': 85
+        }
+        
+        alt_symbols = {
+            'SPX': 'SPX500', '^GSPC': 'SPX500', 'S&P500': 'SPX500',
+            'NASDAQ': 'NAS100', 'QQQ': 'NAS100',
+            'DOW': 'DJ30', 'DOWJONES': 'DJ30',
+            'DAX': 'DAX40', 'GER40': 'DAX40',
+            'FTSE': 'FTSE100', 'UKX': 'FTSE100',
+            'NIKKEI': 'NIKKEI225', 'N225': 'NIKKEI225',
+            'HSI': 'HANG SENG', 'HANG SENG INDEX': 'HANG SENG',
+            'SHCOMP': 'SHANGHAI', 'SSEC': 'SHANGHAI',
+            'XAU': 'XAUUSD', 'XAG': 'XAGUSD',
+            'WTI': 'OIL', 'CL': 'OIL'
+        }
+        
+        if symbol in alt_symbols:
+            symbol = alt_symbols[symbol]
+        
+        vol_score = vol_scores.get(symbol, 50)
+        
+        if vol_score >= 70:
+            emoji = "🔴"
+        elif vol_score >= 40:
+            emoji = "🟡"
+        else:
+            emoji = "🟢"
+        
+        return vol_score, emoji
+    
+    @staticmethod
+    def _is_high_vol_asset(symbol: str) -> bool:
+        """Проверка является ли актив высоковолатильным"""
+        high_vol_assets = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'TSLA', 'OIL', 'NATURALGAS']
+        return any(asset in symbol for asset in high_vol_assets)
+    
+    @staticmethod
+    def _is_low_vol_asset(symbol: str) -> bool:
+        """Проверка является ли актив низковолатильным"""
+        low_vol_assets = ['EURUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'XAUUSD', 'AAPL', 'MSFT', 'SPX500']
+        return any(asset in symbol for asset in low_vol_assets)
+
+# ---------------------------
+# ГЛОБАЛЬНЫЕ ИНСТАНСЫ - ДОЛЖНЫ БЫТЬ ОПРЕДЕЛЕНЫ В НАЧАЛЕ
+# ---------------------------
+enhanced_market_data = EnhancedMarketDataProvider()
 
 # ---------------------------
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ФОРМАТИРОВАНИЯ
@@ -1285,6 +1713,377 @@ class ProfessionalRiskCalculator:
             }
 
 # ---------------------------
+# ДОПОЛНИТЕЛЬНЫЕ ГЛОБАЛЬНЫЕ ИНСТАНСЫ
+# ---------------------------
+margin_calculator = ProfessionalMarginCalculator()
+pivot_analyzer = PivotAnalyzer()
+vol_score_analyzer = EnhancedVolScoreAnalyzer()
+
+# ---------------------------
+# STATES FOR CONVERSATION HANDLERS
+# ---------------------------
+class SingleTradeState(Enum):
+    DEPOSIT = 1
+    LEVERAGE = 2
+    CATEGORY = 3
+    SUBCATEGORY = 4
+    ASSET = 5
+    DIRECTION = 6
+    ENTRY = 7
+    STOP_LOSS = 8
+    TAKE_PROFIT = 9
+
+class MultiTradeState(Enum):
+    DEPOSIT = 1
+    LEVERAGE = 2
+    CATEGORY = 3
+    SUBCATEGORY = 4
+    ASSET = 5
+    DIRECTION = 6
+    ENTRY = 7
+    STOP_LOSS = 8
+    TAKE_PROFIT = 9
+    ADD_MORE = 10
+
+# ---------------------------
+# LEVERAGES
+# ---------------------------
+LEVERAGES = {
+    "DEFAULT": ["1:5", "1:10", "1:20", "1:30", "1:50", "1:100", "1:200", "1:500"],
+    "FOREX": ["1:30", "1:50", "1:100", "1:200", "1:500"],
+    "CRYPTO": ["1:2", "1:3", "1:5", "1:10"],
+    "STOCKS": ["1:2", "1:3", "1:5", "1:10"],
+    "INDICES": ["1:10", "1:20", "1:30", "1:50"],
+    "METALS": ["1:10", "1:20", "1:30", "1:50"],
+    "ENERGY": ["1:10", "1:20", "1:30", "1:50"]
+}
+
+# ---------------------------
+# INSTRUMENT SPECS
+# ---------------------------
+class InstrumentSpecs:
+    """Расширенная база спецификаций финансовых инструментов"""
+    
+    SPECS = {
+        # Forex
+        'EURUSD': {
+            'type': 'forex',
+            'contract_size': 100000,
+            'pip_value': 10.0,
+            'pip_decimal_places': 4,
+            'calculation_formula': 'forex',
+            'min_volume': 0.01,
+            'volume_step': 0.01,
+            'max_leverage': 500,
+            'margin_currency': 'USD'
+        },
+        'USDJPY': {
+            'type': 'forex',
+            'contract_size': 100000,
+            'pip_value': 9.15,
+            'pip_decimal_places': 2,
+            'calculation_formula': 'forex_jpy',
+            'min_volume': 0.01,
+            'volume_step': 0.01,
+            'max_leverage': 500,
+            'margin_currency': 'USD'
+        },
+        # Crypto
+        'BTCUSDT': {
+            'type': 'crypto',
+            'contract_size': 1,
+            'pip_value': 1.0,
+            'pip_decimal_places': 2,
+            'calculation_formula': 'crypto',
+            'min_volume': 0.001,
+            'volume_step': 0.001,
+            'max_leverage': 10,
+            'margin_currency': 'USDT'
+        },
+        # Stocks
+        'AAPL': {
+            'type': 'stock',
+            'contract_size': 1,
+            'pip_value': 1.0,
+            'pip_decimal_places': 2,
+            'calculation_formula': 'stocks',
+            'min_volume': 0.01,
+            'volume_step': 0.01,
+            'max_leverage': 10,
+            'margin_currency': 'USD'
+        },
+        # Indices
+        'SPX500': {
+            'type': 'index',
+            'contract_size': 1,
+            'pip_value': 10.0,
+            'pip_decimal_places': 1,
+            'calculation_formula': 'indices',
+            'min_volume': 0.01,
+            'volume_step': 0.01,
+            'max_leverage': 50,
+            'margin_currency': 'USD'
+        },
+        # Metals
+        'XAUUSD': {
+            'type': 'metal',
+            'contract_size': 100,
+            'pip_value': 10.0,
+            'pip_decimal_places': 2,
+            'calculation_formula': 'metals',
+            'min_volume': 0.01,
+            'volume_step': 0.01,
+            'max_leverage': 50,
+            'margin_currency': 'USD'
+        },
+        # Energy
+        'OIL': {
+            'type': 'energy',
+            'contract_size': 1000,
+            'pip_value': 10.0,
+            'pip_decimal_places': 2,
+            'calculation_formula': 'energy',
+            'min_volume': 0.01,
+            'volume_step': 0.01,
+            'max_leverage': 50,
+            'margin_currency': 'USD'
+        },
+    }
+    
+    @classmethod
+    def get_specs(cls, symbol: str) -> Dict[str, Any]:
+        """Получение спецификаций для инструмента"""
+        if symbol in cls.SPECS:
+            return cls.SPECS[symbol]
+        
+        # Определяем тип инструмента по символу
+        if len(symbol) == 6 and symbol[:3].isalpha() and symbol[3:].isalpha():
+            # Forex
+            if symbol[3:] == 'JPY':
+                return {
+                    'type': 'forex',
+                    'contract_size': 100000,
+                    'pip_value': 9.15 if symbol[:3] == 'USD' else 8.33,
+                    'pip_decimal_places': 2,
+                    'calculation_formula': 'forex_jpy',
+                    'min_volume': 0.01,
+                    'volume_step': 0.01,
+                    'max_leverage': 500,
+                    'margin_currency': symbol[:3]
+                }
+            else:
+                return {
+                    'type': 'forex',
+                    'contract_size': 100000,
+                    'pip_value': 10.0,
+                    'pip_decimal_places': 4,
+                    'calculation_formula': 'forex',
+                    'min_volume': 0.01,
+                    'volume_step': 0.01,
+                    'max_leverage': 500,
+                    'margin_currency': symbol[:3]
+                }
+        
+        elif 'USDT' in symbol:
+            # Crypto
+            return {
+                'type': 'crypto',
+                'contract_size': 1,
+                'pip_value': 1.0,
+                'pip_decimal_places': 2,
+                'calculation_formula': 'crypto',
+                'min_volume': 0.001,
+                'volume_step': 0.001,
+                'max_leverage': 10,
+                'margin_currency': 'USDT'
+            }
+        
+        elif symbol in ['XAUUSD', 'XAGUSD', 'GOLD', 'SILVER']:
+            # Metals
+            return {
+                'type': 'metal',
+                'contract_size': 100,
+                'pip_value': 10.0,
+                'pip_decimal_places': 2,
+                'calculation_formula': 'metals',
+                'min_volume': 0.01,
+                'volume_step': 0.01,
+                'max_leverage': 50,
+                'margin_currency': 'USD'
+            }
+        
+        elif symbol in ['OIL', 'BRENT', 'NATURALGAS']:
+            # Energy
+            return {
+                'type': 'energy',
+                'contract_size': 1000,
+                'pip_value': 10.0,
+                'pip_decimal_places': 2,
+                'calculation_formula': 'energy',
+                'min_volume': 0.01,
+                'volume_step': 0.01,
+                'max_leverage': 50,
+                'margin_currency': 'USD'
+            }
+        
+        elif symbol in ['SPX500', 'US500', 'NAS100', 'DJ30', 'US30', 'DAX40', 'FTSE100', 'NIKKEI225']:
+            # Indices
+            return {
+                'type': 'index',
+                'contract_size': 1,
+                'pip_value': 10.0,
+                'pip_decimal_places': 1,
+                'calculation_formula': 'indices',
+                'min_volume': 0.01,
+                'volume_step': 0.01,
+                'max_leverage': 50,
+                'margin_currency': 'USD'
+            }
+        
+        else:
+            # Default (stocks)
+            return {
+                'type': 'stock',
+                'contract_size': 1,
+                'pip_value': 1.0,
+                'pip_decimal_places': 2,
+                'calculation_formula': 'stocks',
+                'min_volume': 0.01,
+                'volume_step': 0.01,
+                'max_leverage': 10,
+                'margin_currency': 'USD'
+            }
+
+# ---------------------------
+# PORTFOLIO MANAGER
+# ---------------------------
+class PortfolioManager:
+    """Менеджер портфеля пользователя"""
+    
+    user_data = {}
+    
+    @staticmethod
+    def ensure_user(user_id: int):
+        """Создание записи пользователя если её нет"""
+        if user_id not in PortfolioManager.user_data:
+            PortfolioManager.user_data[user_id] = {
+                'deposit': 0.0,
+                'leverage': '1:100',
+                'single_trades': [],
+                'multi_trades': [],
+                'portfolio_metrics': {}
+            }
+    
+    @staticmethod
+    def add_single_trade(user_id: int, trade: Dict):
+        """Добавление одиночной сделки"""
+        PortfolioManager.ensure_user(user_id)
+        PortfolioManager.user_data[user_id]['single_trades'].append(trade)
+    
+    @staticmethod
+    def add_multi_trade(user_id: int, trade: Dict):
+        """Добавление сделки в мультипозицию"""
+        PortfolioManager.ensure_user(user_id)
+        PortfolioManager.user_data[user_id]['multi_trades'].append(trade)
+    
+    @staticmethod
+    def set_deposit_leverage(user_id: int, deposit: float, leverage: str):
+        """Установка депозита и плеча"""
+        PortfolioManager.ensure_user(user_id)
+        PortfolioManager.user_data[user_id]['deposit'] = deposit
+        PortfolioManager.user_data[user_id]['leverage'] = leverage
+    
+    @staticmethod
+    def clear_portfolio(user_id: int):
+        """Очистка портфеля пользователя"""
+        if user_id in PortfolioManager.user_data:
+            PortfolioManager.user_data[user_id]['single_trades'] = []
+            PortfolioManager.user_data[user_id]['multi_trades'] = []
+            return True
+        return False
+
+# ---------------------------
+# PORTFOLIO ANALYZER
+# ---------------------------
+class PortfolioAnalyzer:
+    """Анализатор портфеля"""
+    
+    @staticmethod
+    def calculate_portfolio_metrics(trades: List[Dict], deposit: float) -> Dict[str, Any]:
+        """Расчет агрегированных метрик портфеля"""
+        if not trades:
+            return {
+                'total_margin': 0.0,
+                'total_pnl': 0.0,
+                'total_risk_usd': 0.0,
+                'total_risk_percent': 0.0,
+                'total_profit': 0.0,
+                'avg_rr_ratio': 0.0,
+                'portfolio_margin_level': 0.0,
+                'free_margin': deposit,
+                'free_margin_percent': 100.0,
+                'total_margin_usage': 0.0,
+                'portfolio_leverage': 0.0,
+                'total_equity': deposit,
+                'avg_liquidity_score': 50.0
+            }
+        
+        total_margin = Decimal('0')
+        total_pnl = Decimal('0')
+        total_risk_usd = Decimal('0')
+        total_profit = Decimal('0')
+        total_rr_ratio = Decimal('0')
+        total_notional_value = Decimal('0')
+        
+        for trade in trades:
+            metrics = trade.get('metrics', {})
+            total_margin += Decimal(str(metrics.get('required_margin', 0)))
+            total_pnl += Decimal(str(metrics.get('current_pnl', 0)))
+            total_risk_usd += Decimal(str(metrics.get('risk_amount', 0)))
+            total_profit += Decimal(str(metrics.get('potential_profit', 0)))
+            total_rr_ratio += Decimal(str(metrics.get('rr_ratio', 0)))
+            total_notional_value += Decimal(str(metrics.get('notional_value', 0)))
+        
+        equity = Decimal(str(deposit)) + total_pnl
+        
+        # Расчет уровня маржи
+        if total_margin > Decimal('0'):
+            portfolio_margin_level = (equity / total_margin) * Decimal('100')
+        else:
+            portfolio_margin_level = Decimal('Infinity')
+        
+        free_margin = equity - total_margin
+        free_margin_percent = (free_margin / equity) * Decimal('100') if equity > Decimal('0') else Decimal('0')
+        
+        # Использование маржи
+        total_margin_usage = (total_margin / Decimal(str(deposit))) * Decimal('100') if deposit > 0 else Decimal('0')
+        
+        # Левередж портфеля
+        portfolio_leverage = total_notional_value / Decimal(str(deposit)) if deposit > 0 else Decimal('0')
+        
+        # Средний R/R
+        avg_rr_ratio = total_rr_ratio / Decimal(str(len(trades))) if len(trades) > 0 else Decimal('0')
+        
+        # Общий риск в процентах
+        total_risk_percent = (total_risk_usd / Decimal(str(deposit))) * Decimal('100') if deposit > 0 else Decimal('0')
+        
+        return {
+            'total_margin': float(total_margin),
+            'total_pnl': float(total_pnl),
+            'total_risk_usd': float(total_risk_usd),
+            'total_risk_percent': float(total_risk_percent),
+            'total_profit': float(total_profit),
+            'avg_rr_ratio': float(avg_rr_ratio),
+            'portfolio_margin_level': float(portfolio_margin_level),
+            'free_margin': float(free_margin),
+            'free_margin_percent': float(free_margin_percent),
+            'total_margin_usage': float(total_margin_usage),
+            'portfolio_leverage': float(portfolio_leverage),
+            'total_equity': float(equity),
+            'avg_liquidity_score': 50.0  # Заглушка, в реальности нужно считать
+        }
+
+# ---------------------------
 # КОМАНДЫ - ОБНОВЛЕННЫЕ ДО v3.0
 # ---------------------------
 @retry_on_timeout(max_retries=2, delay=1.0)
@@ -1307,6 +2106,55 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await SafeMessageSender.send_message(
         update.message.chat_id,
+        text,
+        context,
+        InlineKeyboardMarkup(keyboard)
+    )
+
+@retry_on_timeout(max_retries=2, delay=1.0)
+async def pro_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /pro_info"""
+    text = (
+        "📚 <b>PRO RISK CALCULATOR v3.0 - ИНСТРУКЦИЯ</b>\n\n"
+        "🎯 <b>ОСНОВНЫЕ ФУНКЦИИ:</b>\n"
+        "• Фиксированный риск 2% на сделку\n"
+        "• Реальные котировки с 5+ источников\n"
+        "• Точные расчеты маржи с Decimal\n"
+        "• Vol Score система (0-100% vs 20d avg)\n"
+        "• Pivot уровни (H4/Weekly через TAAPI.IO)\n\n"
+        
+        "📊 <b>ПОДДЕРЖИВАЕМЫЕ АКТИВЫ:</b>\n"
+        "• 30+ валютных пар (мажоры и миноры)\n"
+        "• Криптовалюты (BTC, ETH, SOL, XRP и др.)\n"
+        "• Акции крупнейших компаний\n"
+        "• Мировые индексы (S&P500, NASDAQ, DAX)\n"
+        "• Металлы (Gold, Silver, Platinum)\n"
+        "• Энергоресурсы (Oil, Natural Gas)\n\n"
+        
+        "⚡ <b>КАК ИСПОЛЬЗОВАТЬ:</b>\n"
+        "1. Нажмите /start\n"
+        "2. Выберите 'Профессиональный расчет'\n"
+        "3. Введите депозит (минимум $100)\n"
+        "4. Выберите актив и параметры сделки\n"
+        "5. Получите расчет с фиксированным риском 2%\n\n"
+        
+        "🔧 <b>ТЕХНИЧЕСКИЕ ДЕТАЛИ:</b>\n"
+        "• Используется Decimal для точных расчетов\n"
+        "• Поддержка реальных API: Binance, FMP, Metal Price\n"
+        "• Кэширование данных для скорости\n"
+        "• Повторные попытки при таймаутах\n"
+        "• Безопасная отправка сообщений\n\n"
+        
+        "💎 PRO v3.0 | Smart • Fast • Reliable 🚀"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("🎯 Начать расчет", callback_data="pro_calculation")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+    ]
+    
+    await SafeMessageSender.send_message(
+        update.effective_chat.id,
         text,
         context,
         InlineKeyboardMarkup(keyboard)
@@ -1375,7 +2223,6 @@ async def main_menu_save_handler(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton("🚀 Будущие возможности", callback_data="future_features")],
         [InlineKeyboardButton("📚 Инструкции", callback_data="pro_info")],
         [InlineKeyboardButton("💖 Поддержать", callback_data="donate_start")]
-        # Убрана кнопка восстановления прогресса
     ]
     
     await SafeMessageSender.edit_message_text(
@@ -1385,114 +2232,188 @@ async def main_menu_save_handler(update: Update, context: ContextTypes.DEFAULT_T
     )
 
 # ---------------------------
-# ОБНОВЛЕННЫЙ CALLBACK ROUTER - БЕЗ ВОССТАНОВЛЕНИЯ ПРОГРЕССА
+# PORTFOLIO HANDLERS
 # ---------------------------
 @retry_on_timeout(max_retries=2, delay=1.0)
-async def callback_router_fixed(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ГАРАНТИРОВАННО РАБОЧИЕ ОБРАБОТЧИКИ v3.0"""
+async def show_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показ портфеля пользователя"""
     query = update.callback_query
-    await query.answer()
+    await SafeMessageSender.answer_callback_query(query)
     
-    data = query.data
+    user_id = query.from_user.id
+    PortfolioManager.ensure_user(user_id)
+    user_portfolio = PortfolioManager.user_data[user_id]
     
-    try:
-        # Основное меню и навигация
-        if data == "main_menu" or data == "main_menu_save":
-            await main_menu_save_handler(update, context)
-        elif data == "portfolio":
-            await show_portfolio(update, context)
-        elif data == "pro_calculation":
-            await pro_calculation_handler(update, context)
-        elif data == "future_features":
-            await future_features_handler(update, context)
-        elif data == "pro_info":
-            await pro_info_command(update, context)
-        elif data == "clear_portfolio":
-            await clear_portfolio_handler(update, context)
-        elif data == "export_portfolio":
-            await export_portfolio_handler(update, context)
-        # УБРАНО: elif data == "restore_progress":
-        elif data == "donate_start":
-            await DonationSystem.show_donation_menu(update, context)
-        elif data == "donate_usdt":
-            await DonationSystem.show_usdt_donation(update, context)
-        elif data == "donate_ton":
-            await DonationSystem.show_ton_donation(update, context)
-        elif data == "single_trade":
-            await single_trade_start(update, context)
-        elif data == "multi_trade_start":
-            await multi_trade_start(update, context)
+    trades = user_portfolio.get('multi_trades', []) + user_portfolio.get('single_trades', [])
+    
+    if not trades:
+        text = (
+            "📊 <b>Ваш портфель пуст</b>\n\n"
+            "Начните с расчета сделки с фиксированным риском 2%!"
+        )
+        keyboard = [
+            [InlineKeyboardButton("🎯 Новая сделка", callback_data="single_trade")],
+            [InlineKeyboardButton("📊 Мультипозиция", callback_data="multi_trade_start")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+        ]
         
-        # Одиночные сделки - категории и подкатегории
-        elif data.startswith("cat_"):
-            await single_trade_asset_category(update, context)
-        elif data.startswith("s_subcat_"):
-            await single_trade_asset_subcategory(update, context)
-        elif data == "asset_manual":
-            await SafeMessageSender.edit_message_text(
-                query,
-                "Шаг 5/8: ✍️ Введите название актива (например: BTCUSDT):",
-                InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Назад", callback_data="back_to_categories")],
-                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
-                ])
-            )
-            context.user_data['waiting_for_manual_asset'] = True
-            return SingleTradeState.ASSET.value
+        await SafeMessageSender.edit_message_text(
+            query,
+            text,
+            InlineKeyboardMarkup(keyboard)
+        )
+        return
+    
+    deposit = Decimal(str(user_portfolio['deposit']))
+    leverage = user_portfolio['leverage']
+    
+    # Рассчитываем агрегированные метрики портфеля
+    portfolio_metrics = PortfolioAnalyzer.calculate_portfolio_metrics(trades, float(deposit))
+    
+    text = (
+        "📊 <b>ПОРТФЕЛЬ v3.0</b>\n\n"
+        f"💰 <b>ОСНОВНЫЕ ПОКАЗАТЕЛИ:</b>\n"
+        f"▪️ <b>Депозит</b>: ${deposit:,.2f}\n"
+        f"▪️ <b>Плечо</b>: {leverage}\n"
+        f"▪️ <b>Сделок</b>: {len(trades)}\n"
+        f"▪️ <b>Equity</b>: ${portfolio_metrics['total_equity']:,.2f}\n\n"
         
-        # Одиночные сделки - активы и направления
-        elif data.startswith("asset_"):
-            await enhanced_single_trade_asset(update, context)
-        elif data.startswith("dir_"):
-            await enhanced_single_trade_direction(update, context)
-        elif data == "back_to_asset":
-            await enhanced_single_trade_asset(update, context)
-        elif data == "back_to_categories":
-            await single_trade_leverage(update, context)
-        elif data.startswith("lev_"):
-            await single_trade_leverage(update, context)
+        f"🎯 <b>РИСКИ И ПРИБЫЛЬ:</b>\n"
+        f"▪️ <b>Общий риск</b>: ${portfolio_metrics['total_risk_usd']:,.2f} ({portfolio_metrics['total_risk_percent']:.1f}%)\n"
+        f"▪️ <b>Потенциальная прибыль</b>: ${portfolio_metrics['total_profit']:,.2f}\n"
+        f"▪️ <b>Средний R/R</b>: {portfolio_metrics['avg_rr_ratio']:.2f}\n"
+        f"▪️ <b>Текущий P&L</b>: ${portfolio_metrics['total_pnl']:,.2f}\n\n"
         
-        # Мультисделки - категории и подкатегории
-        elif data.startswith("mcat_"):
-            await multi_trade_asset_category(update, context)
-        elif data.startswith("m_subcat_"):
-            await multi_trade_asset_subcategory(update, context)
-        elif data == "massset_manual":
-            await SafeMessageSender.edit_message_text(
-                query,
-                "Шаг 5/9: ✍️ Введите название актива (например: BTCUSDT):",
-                InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Назад", callback_data="mback_to_categories")],
-                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
-                ])
-            )
-            context.user_data['waiting_for_manual_asset'] = True
-            return MultiTradeState.ASSET.value
-        
-        # Мультисделки - активы и направления
-        elif data.startswith("massset_"):
-            await enhanced_multi_trade_asset(update, context)
-        elif data.startswith("mdir_"):
-            await enhanced_multi_trade_direction(update, context)
-        elif data == "mback_to_asset":
-            await enhanced_multi_trade_asset(update, context)
-        elif data.startswith("mlev_"):
-            await multi_trade_leverage(update, context)
-        elif data == "mback_to_categories":
-            await multi_trade_leverage(update, context)
-        elif data == "madd_more":
-            await multi_trade_add_more(update, context)
-        elif data == "mfinish_multi":
-            await multi_trade_finish(update, context)
-        else:
-            await query.answer("Команда не распознана")
+        f"🛡 <b>МАРЖИНАЛЬНЫЕ ПОКАЗАТЕЛИ:</b>\n"
+        f"▪️ <b>Требуемая маржа</b>: ${portfolio_metrics['total_margin']:,.2f} ({portfolio_metrics['total_margin_usage']:.1f}%)\n"
+        f"▪️ <b>Свободная маржа</b>: ${portfolio_metrics['free_margin']:,.2f} ({portfolio_metrics['free_margin_percent']:.1f}%)\n"
+    )
+    
+    # Добавляем уровень маржи с проверкой на бесконечность
+    if portfolio_metrics['portfolio_margin_level'] != float('inf'):
+        text += f"▪️ <b>Уровень маржи</b>: {portfolio_metrics['portfolio_margin_level']:.1f}%\n"
+    else:
+        text += f"▪️ <b>Уровень маржи</b>: ∞\n"
+    
+    text += f"▪️ <b>Левередж портфеля</b>: {portfolio_metrics['portfolio_leverage']:.1f}x\n\n"
+    
+    # Добавляем список сделок
+    text += "<b>📋 СДЕЛКИ:</b>\n"
+    
+    for i, trade in enumerate(trades[:10], 1):  # Ограничиваем 10 сделками
+        try:
+            metrics = trade.get('metrics', {})
+            pnl = Decimal(str(metrics.get('current_pnl', 0)))
+            pnl_sign = "🟢" if pnl > Decimal('0') else "🔴" if pnl < Decimal('0') else "⚪"
             
-    except Exception as e:
-        logger.error(f"Error in callback router: {e}")
-        await query.answer("❌ Произошла ошибка")
+            text += (
+                f"{pnl_sign} <b>#{i}</b> {trade['asset']} ({trade['direction']})\n"
+                f"   Вход: {trade['entry_price']} | SL: {trade['stop_loss']} | TP: {trade['take_profit']}\n"
+                f"   Объем: {metrics.get('volume_lots', 0):.2f} | Риск: ${metrics.get('risk_amount', 0):.2f} | P&L: ${float(pnl):+.2f}\n\n"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка форматирования сделки #{i}: {e}")
+            text += f"<b>#{i}</b> Ошибка отображения сделки\n\n"
+    
+    if len(trades) > 10:
+        text += f"... и еще {len(trades) - 10} сделок\n\n"
+    
+    text += "💎 PRO v3.0 | Smart • Fast • Reliable 🚀"
+    
+    keyboard = [
+        [InlineKeyboardButton("🗑 Очистить портфель", callback_data="clear_portfolio")],
+        [InlineKeyboardButton("🎯 Новая сделка", callback_data="single_trade")],
+        [InlineKeyboardButton("📊 Мультипозиция", callback_data="multi_trade_start")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+    ]
+    
+    await SafeMessageSender.edit_message_text(
+        query,
+        text,
+        InlineKeyboardMarkup(keyboard)
+    )
+
+@retry_on_timeout(max_retries=2, delay=1.0)
+async def clear_portfolio_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Очистка портфеля"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    if PortfolioManager.clear_portfolio(user_id):
+        text = "✅ Портфель успешно очищен!"
+    else:
+        text = "ℹ️ Портфель уже пуст."
+    
+    keyboard = [[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]]
+    
+    await SafeMessageSender.edit_message_text(
+        query,
+        text,
+        InlineKeyboardMarkup(keyboard)
+    )
+
+@retry_on_timeout(max_retries=2, delay=1.0)
+async def export_portfolio_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Экспорт портфеля"""
+    query = update.callback_query
+    await SafeMessageSender.answer_callback_query(query, "Экспорт портфеля в разработке...")
 
 # ---------------------------
-# ОБНОВЛЕННЫЕ ОБРАБОТЧИКИ ДЛЯ ОДИНОЧНЫХ СДЕЛОК (УПРОЩЕННЫЕ)
+# FUTURE FEATURES HANDLER
+# ---------------------------
+@retry_on_timeout(max_retries=2, delay=1.0)
+async def future_features_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик раздела 'Будущие возможности'"""
+    query = update.callback_query
+    await SafeMessageSender.answer_callback_query(query)
+    
+    text = (
+        "🚀 <b>БУДУЩИЕ ВОЗМОЖНОСТИ PRO v4.0</b>\n\n"
+        
+        "🔧 <b>В РАЗРАБОТКЕ:</b>\n"
+        "• 🤖 AG Assistant - ИИ-ассистент для анализа рынка\n"
+        "• 📈 Прогнозирование движения цены на основе ML\n"
+        "• 🎯 Интеллектуальные рекомендации по точкам входа/выхода\n"
+        "• ⚡ Автоматическая оптимизация торговых стратегий\n\n"
+        
+        "✅ <b>РЕАЛИЗОВАНО В v3.0:</b>\n"
+        "• 🔄 Реальные котировки с Binance, FMP, Metal Price API\n"
+        "• 📊 Расширенная аналитика портфеля\n"
+        "• ⚡ Vol Score система (0-100% vs 20d avg)\n"
+        "• 🌍 Поддержка 30+ валютных пар (мажоры и миноры)\n\n"
+        
+        "📊 <b>РАСШИРЕННАЯ АНАЛИТИКА ПОРТФЕЛЯ:</b>\n"
+        "• 📈 Pivot уровни (H4/Weekly через TAAPI.IO)\n"
+        "• 📉 Точный расчет маржи через Decimal\n"
+        "• 💰 Оптимизация распределения капитала\n\n"
+        
+        "⚡ <b>АВТОМАТИЧЕСКАЯ ТОРГОВЛЯ:</b>\n"
+        "• 🤖 Интеграция с торговыми API\n"
+        "• 🎯 Исполнение сделок по сигналам\n"
+        "• 📱 Мониторинг и управление позициями в реальном времени\n\n"
+        
+        "📱 <b>МОБИЛЬНОЕ ПРИЛОЖЕНИЕ:</b>\n"
+        "• 📲 Push-уведомления на телефон\n"
+        "• 🏃 Управление портфелем на ходу\n"
+        "• 📊 Полная функциональность в кармане\n\n"
+        
+        "💎 PRO v3.0 | Smart • Fast • Reliable 🚀"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("💖 Поддержать разработку", callback_data="donate_start")],
+        [InlineKeyboardButton("🎯 Профессиональный расчет", callback_data="pro_calculation")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+    ]
+    
+    await SafeMessageSender.edit_message_text(
+        query,
+        text,
+        InlineKeyboardMarkup(keyboard)
+    )
+
+# ---------------------------
+# SINGLE TRADE HANDLERS
 # ---------------------------
 @retry_on_timeout(max_retries=2, delay=1.0)
 async def single_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1561,9 +2482,130 @@ async def single_trade_deposit(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return SingleTradeState.DEPOSIT.value
 
-# ---------------------------
-# ENHANCED SINGLE TRADE DIRECTION HANDLER (с новым форматом)
-# ---------------------------
+@retry_on_timeout(max_retries=2, delay=1.0)
+async def single_trade_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выбор плеча для одиночной сделки"""
+    query = update.callback_query
+    await SafeMessageSender.answer_callback_query(query)
+    
+    leverage = query.data.replace('lev_', '')
+    context.user_data['leverage'] = leverage
+    
+    text = (
+        "Шаг 3/8: <b>Выберите категорию актива:</b>\n\n"
+        "Укажите тип актива для расчета:"
+    )
+    
+    keyboard = []
+    for category in ASSET_CATEGORIES.keys():
+        keyboard.append([InlineKeyboardButton(category, callback_data=f"cat_{category}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="single_trade")])
+    keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
+    
+    await SafeMessageSender.edit_message_text(
+        query,
+        text,
+        InlineKeyboardMarkup(keyboard)
+    )
+    return SingleTradeState.CATEGORY.value
+
+@retry_on_timeout(max_retries=2, delay=1.0)
+async def single_trade_asset_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выбор категории актива"""
+    query = update.callback_query
+    await SafeMessageSender.answer_callback_query(query)
+    
+    category = query.data.replace('cat_', '')
+    context.user_data['category'] = category
+    
+    category_data = ASSET_CATEGORIES[category]
+    
+    if isinstance(category_data, dict):
+        # Есть подкатегории
+        text = f"Шаг 4/8: <b>Выберите подкатегорию {category}:</b>"
+        
+        keyboard = []
+        for subcategory in category_data.keys():
+            keyboard.append([InlineKeyboardButton(subcategory, callback_data=f"s_subcat_{subcategory}")])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="single_trade")])
+        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
+        
+        await SafeMessageSender.edit_message_text(
+            query,
+            text,
+            InlineKeyboardMarkup(keyboard)
+        )
+        return SingleTradeState.SUBCATEGORY.value
+    else:
+        # Нет подкатегорий
+        context.user_data['assets'] = category_data
+        return await enhanced_single_trade_asset(update, context)
+
+@retry_on_timeout(max_retries=2, delay=1.0)
+async def single_trade_asset_subcategory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выбор подкатегории актива"""
+    query = update.callback_query
+    await SafeMessageSender.answer_callback_query(query)
+    
+    subcategory = query.data.replace('s_subcat_', '')
+    category = context.user_data['category']
+    
+    category_data = ASSET_CATEGORIES[category]
+    if isinstance(category_data, dict):
+        context.user_data['assets'] = category_data[subcategory]
+        return await enhanced_single_trade_asset(update, context)
+    else:
+        return await ConversationHandler.END
+
+@retry_on_timeout(max_retries=2, delay=1.0)
+async def enhanced_single_trade_asset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выбор актива с улучшенным отображением"""
+    query = update.callback_query
+    await SafeMessageSender.answer_callback_query(query)
+    
+    assets = context.user_data.get('assets', [])
+    
+    if not assets:
+        text = "Шаг 5/8: <b>Введите название актива вручную:</b>"
+        keyboard = [
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_categories")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+        ]
+    else:
+        text = "Шаг 5/8: <b>Выберите актив:</b>\n\n"
+        
+        # Добавляем информацию о первых 5 активах
+        for i, asset in enumerate(assets[:5]):
+            price_info = await show_asset_price_enhanced(asset)
+            text += f"▪️ <b>{asset}</b>\n{price_info}"
+        
+        if len(assets) > 5:
+            text += f"\n...и еще {len(assets) - 5} активов\n"
+        
+        keyboard = []
+        row = []
+        for i, asset in enumerate(assets):
+            if i > 0 and i % 2 == 0:
+                keyboard.append(row)
+                row = []
+            row.append(InlineKeyboardButton(asset, callback_data=f"asset_{asset}"))
+        
+        if row:
+            keyboard.append(row)
+        
+        keyboard.append([InlineKeyboardButton("✍️ Ввести вручную", callback_data="asset_manual")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_categories")])
+        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
+    
+    await SafeMessageSender.edit_message_text(
+        query,
+        text,
+        InlineKeyboardMarkup(keyboard)
+    )
+    return SingleTradeState.ASSET.value
+
 @retry_on_timeout(max_retries=2, delay=1.0)
 async def enhanced_single_trade_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработчик направления v3.0 с новым форматом"""
@@ -1574,7 +2616,7 @@ async def enhanced_single_trade_direction(update: Update, context: ContextTypes.
     context.user_data['direction'] = direction
     
     asset = context.user_data['asset']
-    price_info = await show_asset_price_enhanced(asset)  # Используем новый формат
+    price_info = await show_asset_price_enhanced(asset)
     
     # Форматируем отображение актива
     if len(asset) == 6 and asset[:3].isalpha() and asset[3:].isalpha():
@@ -1595,9 +2637,101 @@ async def enhanced_single_trade_direction(update: Update, context: ContextTypes.
     )
     return SingleTradeState.ENTRY.value
 
-# ---------------------------
-# SINGLE TRADE TAKE PROFIT (обновленный формат)
-# ---------------------------
+async def single_trade_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Цена входа для одиночной сделки"""
+    text = update.message.text.strip()
+    
+    try:
+        entry_price = Decimal(text.replace(',', '.'))
+        if entry_price <= Decimal('0'):
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Цена должна быть положительной\nПопробуйте еще раз:",
+                context,
+                InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+                ])
+            )
+            return SingleTradeState.ENTRY.value
+        
+        context.user_data['entry_price'] = float(entry_price)
+        
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            f"✅ Цена входа: {format_price_html(entry_price, context.user_data['asset'])}\n\n"
+            "Шаг 8/8: <b>Введите стоп-лосс:</b>",
+            context,
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
+        )
+        return SingleTradeState.STOP_LOSS.value
+        
+    except Exception:
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Введите число (например: 1.0850)\nПопробуйте еще раз:",
+            context,
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
+        )
+        return SingleTradeState.ENTRY.value
+
+async def single_trade_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Стоп-лосс для одиночной сделки"""
+    text = update.message.text.strip()
+    
+    try:
+        stop_loss = Decimal(text.replace(',', '.'))
+        entry_price = Decimal(str(context.user_data['entry_price']))
+        direction = context.user_data['direction']
+        
+        if direction == 'LONG' and stop_loss >= entry_price:
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Для LONG стоп-лосс должен быть НИЖЕ цены входа\nПопробуйте еще раз:",
+                context,
+                InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+                ])
+            )
+            return SingleTradeState.STOP_LOSS.value
+        elif direction == 'SHORT' and stop_loss <= entry_price:
+            await SafeMessageSender.send_message(
+                update.message.chat_id,
+                "❌ Для SHORT стоп-лосс должен быть ВЫШЕ цены входа\nПопробуйте еще раз:",
+                context,
+                InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+                ])
+            )
+            return SingleTradeState.STOP_LOSS.value
+        
+        context.user_data['stop_loss'] = float(stop_loss)
+        
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            f"✅ Стоп-лосс: {format_price_html(stop_loss, context.user_data['asset'])}\n\n"
+            "Шаг 9/8: <b>Введите тейк-профит:</b>",
+            context,
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
+        )
+        return SingleTradeState.TAKE_PROFIT.value
+        
+    except Exception:
+        await SafeMessageSender.send_message(
+            update.message.chat_id,
+            "❌ Введите число (например: 1.0800)\nПопробуйте еще раз:",
+            context,
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ])
+        )
+        return SingleTradeState.STOP_LOSS.value
+
 async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Тейк-профит и расчет - ОБНОВЛЕННЫЙ ФОРМАТ v3.0"""
     if 'entry_price' not in context.user_data or 'stop_loss' not in context.user_data:
@@ -1720,1184 +2854,60 @@ async def single_trade_take_profit(update: Update, context: ContextTypes.DEFAULT
         return SingleTradeState.TAKE_PROFIT.value
 
 # ---------------------------
-# FUTURE FEATURES HANDLER (обновленный до v3.0)
+# MULTI TRADE HANDLERS (упрощенные)
 # ---------------------------
 @retry_on_timeout(max_retries=2, delay=1.0)
-async def future_features_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик раздела 'Будущие возможности' - ОБНОВЛЕННЫЙ до v3.0"""
+async def multi_trade_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Старт мультисделки"""
     query = update.callback_query
     await SafeMessageSender.answer_callback_query(query)
     
+    context.user_data.clear()
+    context.user_data['trades'] = []
+    
     text = (
-        "🚀 <b>БУДУЩИЕ ВОЗМОЖНОСТИ PRO v4.0</b>\n\n"
-        
-        "🔧 <b>В РАЗРАБОТКЕ:</b>\n"
-        "• 🤖 AG Assistant - ИИ-ассистент для анализа рынка\n"
-        "• 📈 Прогнозирование движения цены на основе ML\n"
-        "• 🎯 Интеллектуальные рекомендации по точкам входа/выхода\n"
-        "• ⚡ Автоматическая оптимизация торговых стратегий\n\n"
-        
-        "✅ <b>РЕАЛИЗОВАНО В v3.0:</b>\n"
-        "• 🔄 Реальные котировки с Binance, FMP, Metal Price API\n"
-        "• 📊 Расширенная аналитика портфеля\n"
-        "• ⚡ Vol Score система (0-100% vs 20d avg)\n"
-        "• 🌍 Поддержка 30+ валютных пар (мажоры и миноры)\n\n"
-        
-        "📊 <b>РАСШИРЕННАЯ АНАЛИТИКА ПОРТФЕЛЯ:</b>\n"
-        "• 📈 Pivot уровни (H4/Weekly через TAAPI.IO)\n"
-        "• 📉 Точный расчет маржи через Decimal\n"
-        "• 💰 Оптимизация распределения капитала\n\n"
-        
-        "⚡ <b>АВТОМАТИЧЕСКАЯ ТОРГОВЛЯ:</b>\n"
-        "• 🤖 Интеграция с торговыми API\n"
-        "• 🎯 Исполнение сделок по сигналам\n"
-        "• 📱 Мониторинг и управление позициями в реальном времени\n\n"
-        
-        "📱 <b>МОБИЛЬНОЕ ПРИЛОЖЕНИЕ:</b>\n"
-        "• 📲 Push-уведомления на телефон\n"
-        "• 🏃 Управление портфелем на ходу\n"
-        "• 📊 Полная функциональность в кармане\n\n"
-        
-        "🛡 <b>ПОВЫШЕННАЯ БЕЗОПАСНОСТЬ:</b>\n"
-        "• 🔐 Двухфакторная аутентификация\n"
-        "• 🔒 Шифрование данных\n"
-        "• ☁️ Резервное копирование в облако\n\n"
-        
-        "💱 <b>МУЛЬТИВАЛЮТНАЯ ПОДДЕРЖКА:</b>\n"
-        "• 🌍 Уже поддерживает 30+ валютных пар\n"
-        "• 🔄 Автоматическая конвертация\n"
-        "• 📍 Локализация для разных регионов\n\n"
-        
-        "🎓 <b>ОБУЧАЮЩИЕ МАТЕРИАЛЫ:</b>\n"
-        "• 📹 Видео-уроки\n"
-        "• 📊 Торговые стратегии\n"
-        "• 📈 Анализ рынка и обзоры\n\n"
-        
-        "<i>Следите за обновлениями! Новые функции появляются регулярно.</i>\n\n"
-        
-        "💎 <b>PRO v3.0 | Smart • Fast • Reliable 🚀</b>\n"
-        "<i>Поддержите развитие проекта донатом для ускорения реализации!</i>"
+        "📊 <b>МУЛЬТИПОЗИЦИЯ v3.0</b>\n\n"
+        "Шаг 1/9: Введите депозит в USD (минимум $100):"
     )
     
-    keyboard = [
-        [InlineKeyboardButton("💖 Поддержать разработку", callback_data="donate_start")],
-        [InlineKeyboardButton("🎯 Профессиональный расчет", callback_data="pro_calculation")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-    ]
+    keyboard = [[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]]
     
     await SafeMessageSender.edit_message_text(
         query,
         text,
         InlineKeyboardMarkup(keyboard)
     )
+    return MultiTradeState.DEPOSIT.value
 
-# ---------------------------
-# ЗАПУСК ПРИЛОЖЕНИЯ (обновленный лог)
-# ---------------------------
-async def cleanup_session():
-    """Асинхронное закрытие сессии market data."""
-    if enhanced_market_data.session and not enhanced_market_data.session.closed:
-        await enhanced_market_data.session.close()
-
-if __name__ == "__main__":
-    logger.info("🚀 ЗАПУСК PRO RISK CALCULATOR v3.0 ENTERPRISE EDITION")
-    logger.info("✅ FMP API ИСПРАВЛЕН: правильный формат &apikey=")
-    logger.info("✅ DECIMAL РАСЧЕТЫ: точные финансовые вычисления")
-    logger.info("✅ VOL SCORE СИСТЕМА: 0-100% сравнение с 20d avg")
-    logger.info("✅ УБРАНА ФУНКЦИЯ ВОССТАНОВЛЕНИЯ: неработающий функционал")
-    logger.info("✅ ВЕРСИЯ ОБНОВЛЕНА: v3.1 → v3.0")
-    logger.info("✅ CALLBACK HANDLERS ИСПРАВЛЕНЫ: гарантированная работа")
-    logger.info("📊 РАСШИРЕННЫЙ СПИСОК АКТИВОВ: 78+ позиций")
-    logger.info("🌐 ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ: Фиксированный риск 2%")
-    logger.info("🔧 СИСТЕМА ГОТОВА К ПРОДАКШЕНУ")
-    
-    try:
-        asyncio.run(main_enhanced())
-    except KeyboardInterrupt:
-        logger.info("⏹ Бот остановлен пользователем")
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка: {e}")
-        try:
-            asyncio.run(cleanup_session())
-        except Exception as cleanup_err:
-            logger.error(f"Ошибка при cleanup сессии: {cleanup_err}")
-        raise
-
-# ПРОДОЛЖЕНИЕ КОДА - PIVOT УРОВНИ И ОБНОВЛЕННЫЕ ОТЧЕТЫ
-
-# ---------------------------
-# PIVOT ANALYZER - TAAPI.IO И OANDA API ИНТЕГРАЦИЯ
-# ---------------------------
-class PivotAnalyzer:
-    """Анализатор Pivot уровней через TAAPI.IO и OANDA API"""
-    
-    def __init__(self):
-        self.session = None
-        self.pivot_cache = cachetools.TTLCache(maxsize=200, ttl=3600)
-        
-    async def get_session(self):
-        if self.session is None:
-            self.session = aiohttp.ClientSession()
-        return self.session
-    
-    async def calculate_pivot_levels_taapi(self, symbol: str, timeframe: str = "4h") -> Dict[str, Any]:
-        """Расчет Pivot уровней через TAAPI.IO"""
-        try:
-            cache_key = f"{symbol}_{timeframe}"
-            cached = self.pivot_cache.get(cache_key)
-            if cached:
-                return cached
-            
-            if not TAAPI_API_KEY:
-                logger.warning("TAAPI_API_KEY не установлен")
-                return None
-            
-            session = await self.get_session()
-            
-            # Определяем тип актива для TAAPI
-            exchange = "BINANCE"
-            if self._is_forex(symbol):
-                exchange = "FX"
-            elif self._is_crypto(symbol):
-                exchange = "BINANCE"
-            
-            # Получаем свечные данные
-            url = f"https://api.taapi.io/pivotpoints"
-            params = {
-                'secret': TAAPI_API_KEY,
-                'exchange': exchange,
-                'symbol': symbol,
-                'interval': timeframe,
-                'period': 20  # Используем 20 периодов для расчета
-            }
-            
-            async with session.get(url, params=params, timeout=10) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    # TAAPI возвращает pivot уровни в структурированном виде
-                    pivot_levels = {
-                        'pivot': data.get('pivot', 0),
-                        'r1': data.get('r1', 0),
-                        'r2': data.get('r2', 0),
-                        'r3': data.get('r3', 0),
-                        's1': data.get('s1', 0),
-                        's2': data.get('s2', 0),
-                        's3': data.get('s3', 0),
-                        'source': 'taapi',
-                        'timeframe': timeframe
-                    }
-                    
-                    self.pivot_cache[cache_key] = pivot_levels
-                    return pivot_levels
-                else:
-                    logger.error(f"TAAPI API error: {response.status}")
-                    return None
-                    
-        except Exception as e:
-            logger.error(f"Ошибка TAAPI API для {symbol}: {e}")
-            return None
-    
-    async def calculate_pivot_levels_oanda(self, symbol: str, timeframe: str = "H4") -> Dict[str, Any]:
-        """Расчет Pivot уровней через OANDA API"""
-        try:
-            cache_key = f"oanda_{symbol}_{timeframe}"
-            cached = self.pivot_cache.get(cache_key)
-            if cached:
-                return cached
-            
-            if not OANDA_API_KEY:
-                logger.warning("OANDA_API_KEY не установлен")
-                return None
-            
-            # Конвертируем символ в формат OANDA (если нужно)
-            oanda_symbol = self._convert_to_oanda_symbol(symbol)
-            if not oanda_symbol:
-                return None
-            
-            session = await self.get_session()
-            
-            # Получаем исторические данные
-            url = f"https://api-fxtrade.oanda.com/v3/instruments/{oanda_symbol}/candles"
-            headers = {
-                'Authorization': f'Bearer {OANDA_API_KEY}',
-                'Accept-Datetime-Format': 'RFC3339'
-            }
-            
-            params = {
-                'price': 'M',
-                'granularity': timeframe,
-                'count': 100  # Получаем 100 свечей для расчета
-            }
-            
-            async with session.get(url, headers=headers, params=params, timeout=10) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    if 'candles' in data and len(data['candles']) > 0:
-                        # Рассчитываем Pivot уровни на основе High, Low, Close
-                        candles = data['candles']
-                        
-                        # Берем последнюю полную свечу для расчета
-                        last_candle = None
-                        for candle in reversed(candles):
-                            if candle['complete']:
-                                last_candle = candle
-                                break
-                        
-                        if last_candle:
-                            high = float(last_candle['mid']['h'])
-                            low = float(last_candle['mid']['l'])
-                            close = float(last_candle['mid']['c'])
-                            
-                            # Классический расчет Pivot уровней
-                            pivot = (high + low + close) / 3
-                            r1 = (2 * pivot) - low
-                            r2 = pivot + (high - low)
-                            r3 = high + 2 * (pivot - low)
-                            s1 = (2 * pivot) - high
-                            s2 = pivot - (high - low)
-                            s3 = low - 2 * (high - pivot)
-                            
-                            pivot_levels = {
-                                'pivot': pivot,
-                                'r1': r1,
-                                'r2': r2,
-                                'r3': r3,
-                                's1': s1,
-                                's2': s2,
-                                's3': s3,
-                                'source': 'oanda',
-                                'timeframe': timeframe
-                            }
-                            
-                            self.pivot_cache[cache_key] = pivot_levels
-                            return pivot_levels
-                            
-                else:
-                    logger.error(f"OANDA API error: {response.status}")
-                    return None
-                    
-        except Exception as e:
-            logger.error(f"Ошибка OANDA API для {symbol}: {e}")
-            return None
-    
-    async def get_pivot_levels(self, symbol: str) -> Dict[str, Dict[str, float]]:
-        """Получение Pivot уровней для H4 и Weekly"""
-        try:
-            # Пробуем разные источники в порядке приоритета
-            h4_levels = await self.calculate_pivot_levels_taapi(symbol, "4h")
-            if not h4_levels:
-                h4_levels = await self.calculate_pivot_levels_oanda(symbol, "H4")
-            
-            weekly_levels = await self.calculate_pivot_levels_taapi(symbol, "1w")
-            if not weekly_levels:
-                weekly_levels = await self.calculate_pivot_levels_oanda(symbol, "W")
-            
-            # Если не удалось получить уровни, используем расчет на основе текущей цены
-            if not h4_levels:
-                current_price = await enhanced_market_data.get_real_time_price(symbol)
-                if current_price:
-                    h4_levels = self._calculate_simple_pivot(current_price, "H4")
-            
-            if not weekly_levels:
-                current_price = await enhanced_market_data.get_real_time_price(symbol)
-                if current_price:
-                    weekly_levels = self._calculate_simple_pivot(current_price, "WEEKLY")
-            
-            return {
-                'H4': h4_levels or {},
-                'WEEKLY': weekly_levels or {}
-            }
-            
-        except Exception as e:
-            logger.error(f"Ошибка получения Pivot уровней для {symbol}: {e}")
-            return {'H4': {}, 'WEEKLY': {}}
-    
-    def _calculate_simple_pivot(self, current_price: Decimal, timeframe: str) -> Dict[str, Any]:
-        """Простой расчет Pivot на основе текущей цены (запасной вариант)"""
-        price = float(current_price)
-        
-        # Базовая логика расчета (можно улучшить)
-        pivot = price
-        r1 = price * 1.01
-        r2 = price * 1.02
-        r3 = price * 1.03
-        s1 = price * 0.99
-        s2 = price * 0.98
-        s3 = price * 0.97
-        
-        return {
-            'pivot': pivot,
-            'r1': r1,
-            'r2': r2,
-            'r3': r3,
-            's1': s1,
-            's2': s2,
-            's3': s3,
-            'source': 'calculated',
-            'timeframe': timeframe
-        }
-    
-    def _is_forex(self, symbol: str) -> bool:
-        """Проверка является ли актив Forex парой"""
-        if len(symbol) == 6 and symbol[:3].isalpha() and symbol[3:].isalpha():
-            return True
-        return False
-    
-    def _is_crypto(self, symbol: str) -> bool:
-        """Проверка является ли актив криптовалютой"""
-        crypto_symbols = ['BTC', 'ETH', 'XRP', 'LTC', 'BCH', 'ADA', 'DOT', 'USDT', 'SOL', 'BNB']
-        return any(crypto in symbol for crypto in crypto_symbols)
-    
-    def _convert_to_oanda_symbol(self, symbol: str) -> Optional[str]:
-        """Конвертация символа в формат OANDA"""
-        if self._is_forex(symbol):
-            # OANDA использует формат с подчеркиванием для Forex
-            return f"{symbol[:3]}_{symbol[3:]}"
-        return None
-    
-    @staticmethod
-    def format_pivot_display(pivot_levels: Dict, timeframe: str) -> str:
-        """Форматирование Pivot уровней для отображения"""
-        if not pivot_levels:
-            return f"▪️ {timeframe} Pivot: данные недоступны\n"
-        
-        source_emoji = "🤖" if pivot_levels.get('source') == 'taapi' else "🏦" if pivot_levels.get('source') == 'oanda' else "🧮"
-        
-        text = f"▪️ {timeframe} Pivot {source_emoji} {pivot_levels.get('pivot', 0):.2f}\n"
-        text += f"   ▪️ R1  {pivot_levels.get('r1', 0):.2f} | S1 {pivot_levels.get('s1', 0):.2f}\n"
-        text += f"   ▪️ R2  {pivot_levels.get('r2', 0):.2f} | S2 {pivot_levels.get('s2', 0):.2f}\n"
-        text += f"   ▪️ R3  {pivot_levels.get('r3', 0):.2f} | S3 {pivot_levels.get('s3', 0):.2f}\n"
-        
-        return text
-
-# ---------------------------
-# ENHANCED VOL SCORE ANALYZER (с реальными данными)
-# ---------------------------
-class EnhancedVolScoreAnalyzer:
-    """Улучшенный анализатор Vol Score с историческими данными"""
-    
-    def __init__(self):
-        self.session = None
-        self.vol_cache = cachetools.TTLCache(maxsize=200, ttl=1800)
-        
-    async def get_session(self):
-        if self.session is None:
-            self.session = aiohttp.ClientSession()
-        return self.session
-    
-    async def calculate_vol_score(self, symbol: str) -> Tuple[int, str]:
-        """Расчет Vol Score на основе исторической волатильности"""
-        try:
-            cache_key = f"vol_score_{symbol}"
-            cached = self.vol_cache.get(cache_key)
-            if cached:
-                return cached
-            
-            # Получаем исторические данные через FMP API
-            historical_data = await self._get_historical_data(symbol)
-            
-            if historical_data and len(historical_data) >= 20:
-                # Рассчитываем волатильность на основе 20-дневных данных
-                closes = [float(day['close']) for day in historical_data[:20]]
-                
-                if len(closes) >= 2:
-                    # Расчет стандартного отклонения
-                    import statistics
-                    returns = []
-                    for i in range(1, len(closes)):
-                        ret = (closes[i] - closes[i-1]) / closes[i-1]
-                        returns.append(ret)
-                    
-                    if returns:
-                        std_dev = statistics.stdev(returns)
-                        annualized_vol = std_dev * (252 ** 0.5)  # Годовая волатильность
-                        
-                        # Нормализуем до 0-100%
-                        # Базовые уровни: 10% = низкая, 30% = средняя, 50%+ = высокая
-                        base_score = min(annualized_vol * 200, 100)  # Преобразуем в процент
-                        vol_score = int(base_score)
-                        
-                        # Регулируем на основе типа актива
-                        if EnhancedVolScoreAnalyzer._is_high_vol_asset(symbol):
-                            vol_score = min(vol_score + 15, 100)
-                        elif EnhancedVolScoreAnalyzer._is_low_vol_asset(symbol):
-                            vol_score = max(vol_score - 10, 0)
-                        
-                        # Определяем эмодзи
-                        if vol_score >= 70:
-                            emoji = "🔴"
-                        elif vol_score >= 40:
-                            emoji = "🟡"
-                        else:
-                            emoji = "🟢"
-                        
-                        result = (vol_score, emoji)
-                        self.vol_cache[cache_key] = result
-                        return result
-            
-            # Fallback на статические данные
-            return await self._get_fallback_vol_score(symbol)
-            
-        except Exception as e:
-            logger.error(f"Ошибка расчета Vol Score для {symbol}: {e}")
-            return await self._get_fallback_vol_score(symbol)
-    
-    async def _get_historical_data(self, symbol: str) -> Optional[List[Dict]]:
-        """Получение исторических данных через FMP API"""
-        try:
-            if not FMP_API_KEY:
-                return None
-            
-            session = await self.get_session()
-            
-            # Маппинг символов для FMP
-            symbol_mapping = {
-                'BTCUSDT': 'BTCUSD',
-                'ETHUSDT': 'ETHUSD',
-                'XAUUSD': 'XAU',
-                'XAGUSD': 'XAG',
-            }
-            
-            fmp_symbol = symbol_mapping.get(symbol, symbol)
-            
-            url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{fmp_symbol}?apikey={FMP_API_KEY}&serietype=line"
-            
-            async with session.get(url, timeout=10) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data.get('historical', [])[:20]  # Берем последние 20 дней
-                else:
-                    return None
-                    
-        except Exception as e:
-            logger.error(f"Ошибка получения исторических данных для {symbol}: {e}")
-            return None
-    
-    async def _get_fallback_vol_score(self, symbol: str) -> Tuple[int, str]:
-        """Резервный расчет Vol Score"""
-        # Статические данные для основных активов
-        vol_scores = {
-            # Forex - Мажоры (низкая волатильность)
-            'EURUSD': 35, 'GBPUSD': 45, 'USDJPY': 40, 'USDCHF': 38,
-            'AUDUSD': 50, 'USDCAD': 42, 'NZDUSD': 48,
-            
-            # Forex - Миноры (средняя волатильность)
-            'EURGBP': 30, 'EURJPY': 55, 'EURCHF': 32, 'EURAUD': 60,
-            'EURCAD': 45, 'EURNZD': 62, 'GBPAUD': 58, 'GBPCAD': 48,
-            'GBPJPY': 65, 'GBPCHF': 40, 'GBPNZD': 68, 'AUDJPY': 52,
-            'AUDCAD': 44, 'AUDCHF': 36, 'AUDNZD': 55, 'CADJPY': 46,
-            'CHFJPY': 42, 'NZDJPY': 58, 'NZDCAD': 43, 'NZDCHF': 35,
-            
-            # Crypto (высокая волатильность)
-            'BTCUSDT': 82, 'ETHUSDT': 78, 'SOLUSDT': 88, 'XRPUSDT': 72,
-            'LTCUSDT': 68, 'ADAUSDT': 75, 'DOTUSDT': 70, 'BNBUSDT': 74,
-            
-            # Stocks (средняя волатильность)
-            'AAPL': 42, 'TSLA': 85, 'NVDA': 65, 'MSFT': 38,
-            'GOOGL': 40, 'AMZN': 45, 'META': 50, 'NFLX': 55,
-            
-            # Indices (низкая волатильность)
-            'SPX500': 28, 'US500': 28, 'NAS100': 35, 'DJ30': 25,
-            'US30': 25, 'RUT': 40, 'US2000': 40,
-            
-            # Metals (средняя волатильность)
-            'XAUUSD': 32, 'XAGUSD': 55, 'XPTUSD': 48, 'XPDUSD': 52,
-            'GOLD': 32, 'SILVER': 55,
-            
-            # Energy (высокая волатильность)
-            'OIL': 75, 'BRENT': 72, 'NATURALGAS': 85
-        }
-        
-        alt_symbols = {
-            'SPX': 'SPX500', '^GSPC': 'SPX500', 'S&P500': 'SPX500',
-            'NASDAQ': 'NAS100', 'QQQ': 'NAS100',
-            'DOW': 'DJ30', 'DOWJONES': 'DJ30',
-            'DAX': 'DAX40', 'GER40': 'DAX40',
-            'FTSE': 'FTSE100', 'UKX': 'FTSE100',
-            'NIKKEI': 'NIKKEI225', 'N225': 'NIKKEI225',
-            'HSI': 'HANG SENG', 'HANG SENG INDEX': 'HANG SENG',
-            'SHCOMP': 'SHANGHAI', 'SSEC': 'SHANGHAI',
-            'XAU': 'XAUUSD', 'XAG': 'XAGUSD',
-            'WTI': 'OIL', 'CL': 'OIL'
-        }
-        
-        if symbol in alt_symbols:
-            symbol = alt_symbols[symbol]
-        
-        vol_score = vol_scores.get(symbol, 50)
-        
-        if vol_score >= 70:
-            emoji = "🔴"
-        elif vol_score >= 40:
-            emoji = "🟡"
-        else:
-            emoji = "🟢"
-        
-        return vol_score, emoji
-    
-    @staticmethod
-    def _is_high_vol_asset(symbol: str) -> bool:
-        """Проверка является ли актив высоковолатильным"""
-        high_vol_assets = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'TSLA', 'OIL', 'NATURALGAS']
-        return any(asset in symbol for asset in high_vol_assets)
-    
-    @staticmethod
-    def _is_low_vol_asset(symbol: str) -> bool:
-        """Проверка является ли актив низковолатильным"""
-        low_vol_assets = ['EURUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'XAUUSD', 'AAPL', 'MSFT', 'SPX500']
-        return any(asset in symbol for asset in low_vol_assets)
-
-# ---------------------------
-# ENHANCED PORTFOLIO REPORT WITH PIVOT LEVELS
-# ---------------------------
-async def show_portfolio_enhanced(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int = None):
-    """Показ портфеля с Pivot уровнями и профессиональными метриками"""
-    query = update.callback_query if update.callback_query else None
-    if query:
-        await SafeMessageSender.answer_callback_query(query)
-    
-    if not user_id:
-        user_id = query.from_user.id if query else update.message.from_user.id
-    
-    PortfolioManager.ensure_user(user_id)
-    user_portfolio = PortfolioManager.user_data[user_id]
-    
-    trades = user_portfolio.get('multi_trades', []) + user_portfolio.get('single_trades', [])
-    
-    if not trades:
-        text = (
-            "📊 <b>Ваш портфель пуст</b>\n\n"
-            "Начните с расчета сделки с фиксированным риском 2%!"
-        )
-        keyboard = [
-            [InlineKeyboardButton("🎯 Новая сделка", callback_data="single_trade")],
-            [InlineKeyboardButton("📊 Мультипозиция", callback_data="multi_trade_start")],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-        ]
-        
-        if query:
-            await SafeMessageSender.edit_message_text(
-                query,
-                text,
-                InlineKeyboardMarkup(keyboard)
-            )
-        else:
-            await SafeMessageSender.send_message(
-                user_id,
-                text,
-                context,
-                InlineKeyboardMarkup(keyboard)
-            )
-        return
-    
-    deposit = Decimal(str(user_portfolio['deposit']))
-    leverage = user_portfolio['leverage']
-    
-    # Обновляем метрики с реальными ценами
-    logger.info(f"Обновление метрик для {len(trades)} сделок")
-    for trade in trades:
-        try:
-            metrics = await ProfessionalRiskCalculator.calculate_professional_metrics(
-                trade, deposit, leverage, "2%"
-            )
-            trade['metrics'] = metrics
-            logger.info(f"Метрики для {trade['asset']}: объем={metrics.get('volume_lots', 0)}, P&L={metrics.get('current_pnl', 0)}")
-        except Exception as e:
-            logger.error(f"Ошибка расчета метрик для сделки {trade.get('asset', 'unknown')}: {e}")
-    
-    # Рассчитываем агрегированные метрики портфеля
-    portfolio_metrics = PortfolioAnalyzer.calculate_portfolio_metrics(trades, float(deposit))
-    
-    # Получаем Pivot уровни для каждого актива в портфеле
-    pivot_analyzer = PivotAnalyzer()
-    vol_score_analyzer = EnhancedVolScoreAnalyzer()
-    
-    # Подготовка данных для отчета
-    text = (
-        "📊 <b>ПОРТФЕЛЬ v3.0</b>\n\n"
-        f"💰 <b>ОСНОВНЫЕ ПОКАЗАТЕЛИ:</b>\n"
-        f"▪️ <b>Депозит</b>: ${deposit:,.2f}\n"
-        f"▪️ <b>Плечо</b>: {leverage}\n"
-        f"▪️ <b>Сделок</b>: {len(trades)}\n"
-        f"▪️ <b>Equity</b>: ${portfolio_metrics['total_equity']:,.2f}\n\n"
-        
-        f"🎯 <b>РИСКИ И ПРИБЫЛЬ:</b>\n"
-        f"▪️ <b>Общий риск</b>: ${portfolio_metrics['total_risk_usd']:,.2f} ({portfolio_metrics['total_risk_percent']:.1f}%)\n"
-        f"▪️ <b>Потенциальная прибыль</b>: ${portfolio_metrics['total_profit']:,.2f}\n"
-        f"▪️ <b>Средний R/R</b>: {portfolio_metrics['avg_rr_ratio']:.2f}\n"
-        f"▪️ <b>Текущий P&L</b>: ${portfolio_metrics['total_pnl']:,.2f}\n\n"
-        
-        f"🛡 <b>МАРЖИНАЛЬНЫЕ ПОКАЗАТЕЛИ:</b>\n"
-        f"▪️ <b>Требуемая маржа</b>: ${portfolio_metrics['total_margin']:,.2f} ({portfolio_metrics['total_margin_usage']:.1f}%)\n"
-        f"▪️ <b>Свободная маржа</b>: ${portfolio_metrics['free_margin']:,.2f} ({portfolio_metrics['free_margin_percent']:.1f}%)\n"
-    )
-    
-    # Добавляем уровень маржи с проверкой на бесконечность
-    if portfolio_metrics['portfolio_margin_level'] != float('inf'):
-        text += f"▪️ <b>Уровень маржи</b>: {portfolio_metrics['portfolio_margin_level']:.1f}%\n"
-    else:
-        text += f"▪️ <b>Уровень маржи</b>: ∞\n"
-    
-    text += f"▪️ <b>Левередж портфеля</b>: {portfolio_metrics['portfolio_leverage']:.1f}x\n\n"
-    
-    # Добавляем PRICE LEVELS для каждого актива
-    text += "<b>📈 PRICE LEVELS</b>\n"
-    text += "──────────────────\n"
-    
-    # Собираем уникальные активы для анализа
-    unique_assets = list(set(trade['asset'] for trade in trades))
-    
-    for asset in unique_assets[:5]:  # Ограничиваем 5 активами для читаемости
-        try:
-            # Получаем Pivot уровни
-            pivot_levels = await pivot_analyzer.get_pivot_levels(asset)
-            
-            # Получаем текущую цену
-            current_price, source = await enhanced_market_data.get_price_with_fallback(asset)
-            
-            # Получаем Vol Score
-            vol_score, vol_emoji = await vol_score_analyzer.calculate_vol_score(asset)
-            
-            # Форматируем отображение актива
-            if len(asset) == 6 and asset[:3].isalpha() and asset[3:].isalpha():
-                base_flag = get_currency_flag(asset[:3])
-                quote_flag = get_currency_flag(asset[3:])
-                asset_display = f"{asset} {base_flag}/{quote_flag}"
-            elif 'USDT' in asset:
-                crypto = asset.replace('USDT', '')
-                asset_display = f"{asset} ({crypto}/USDT)"
-            else:
-                asset_display = asset
-            
-            text += f"\n<code>{asset_display}</code>\n"
-            text += f"{vol_emoji} Vol Score: {vol_score}% | Цена: {format_price_html(current_price, asset)}\n"
-            
-            # Добавляем H4 Pivot
-            if 'H4' in pivot_levels and pivot_levels['H4']:
-                h4_pivot = pivot_levels['H4']
-                text += f"▪️ H4 Pivot {format_price_html(Decimal(str(h4_pivot.get('pivot', 0))), asset)}\n"
-                text += f"   ▪️ R1  {format_price_html(Decimal(str(h4_pivot.get('r1', 0))), asset)} | S1 {format_price_html(Decimal(str(h4_pivot.get('s1', 0))), asset)}\n"
-                text += f"   ▪️ R2  {format_price_html(Decimal(str(h4_pivot.get('r2', 0))), asset)} | S2 {format_price_html(Decimal(str(h4_pivot.get('s2', 0))), asset)}\n"
-                text += f"   ▪️ R3  {format_price_html(Decimal(str(h4_pivot.get('r3', 0))), asset)} | S3 {format_price_html(Decimal(str(h4_pivot.get('s3', 0))), asset)}\n"
-            else:
-                text += f"▪️ H4 Pivot: данные временно недоступны\n"
-            
-            # Добавляем Weekly Pivot
-            if 'WEEKLY' in pivot_levels and pivot_levels['WEEKLY']:
-                weekly_pivot = pivot_levels['WEEKLY']
-                text += f"\n▪️ Weekly Pivot {format_price_html(Decimal(str(weekly_pivot.get('pivot', 0))), asset)}\n"
-                text += f"   ▪️ R1  {format_price_html(Decimal(str(weekly_pivot.get('r1', 0))), asset)} | S1 {format_price_html(Decimal(str(weekly_pivot.get('s1', 0))), asset)}\n"
-                text += f"   ▪️ R2  {format_price_html(Decimal(str(weekly_pivot.get('r2', 0))), asset)} | S2 {format_price_html(Decimal(str(weekly_pivot.get('s2', 0))), asset)}\n"
-                text += f"   ▪️ R3  {format_price_html(Decimal(str(weekly_pivot.get('r3', 0))), asset)} | S3 {format_price_html(Decimal(str(weekly_pivot.get('s3', 0))), asset)}\n"
-            else:
-                text += f"▪️ Weekly Pivot: данные временно недоступны\n"
-                
-            text += "──────────────────\n"
-            
-        except Exception as e:
-            logger.error(f"Ошибка при получении данных для {asset}: {e}")
-            text += f"\n{asset}: ошибка получения данных\n"
-            text += "──────────────────\n"
-    
-    if len(unique_assets) > 5:
-        text += f"\n<i>...и еще {len(unique_assets) - 5} активов</i>\n\n"
-    else:
-        text += "\n"
-    
-    # Добавляем список сделок
-    text += "<b>📋 СДЕЛКИ:</b>\n"
-    
-    total_position_value = Decimal('0')
-    
-    for i, trade in enumerate(trades, 1):
-        try:
-            metrics = trade.get('metrics', {})
-            pnl = Decimal(str(metrics.get('current_pnl', 0)))
-            pnl_sign = "🟢" if pnl > Decimal('0') else "🔴" if pnl < Decimal('0') else "⚪"
-            
-            # Рассчитываем SL и TP в денежном выражении
-            sl_amount = ProfessionalRiskCalculator.calculate_pnl_dollar_amount(
-                Decimal(str(trade['entry_price'])),
-                Decimal(str(trade['stop_loss'])),
-                Decimal(str(metrics.get('volume_lots', 0))),
-                Decimal(str(metrics.get('pip_value', 1))),
-                trade['direction'],
-                trade['asset']
-            )
-            
-            tp_amount = ProfessionalRiskCalculator.calculate_pnl_dollar_amount(
-                Decimal(str(trade['entry_price'])),
-                Decimal(str(trade['take_profit'])),
-                Decimal(str(metrics.get('volume_lots', 0))),
-                Decimal(str(metrics.get('pip_value', 1))),
-                trade['direction'],
-                trade['asset']
-            )
-            
-            # Форматируем отображение актива
-            asset_display = format_asset_display(trade['asset'], trade['direction'])
-            
-            # Получаем Vol Score для сделки
-            vol_score, vol_emoji = await vol_score_analyzer.calculate_vol_score(trade['asset'])
-            
-            text += (
-                f"{pnl_sign} <b>#{i}</b> {asset_display} {vol_emoji}\n"
-                f"   <b>Вход</b>: {format_price_html(Decimal(str(trade['entry_price'])), trade['asset'])} | "
-                f"<b>SL</b>: {format_price_html(Decimal(str(trade['stop_loss'])), trade['asset'])} (${abs(float(sl_amount)):.2f}) | "
-                f"<b>TP</b>: {format_price_html(Decimal(str(trade['take_profit'])), trade['asset'])} (${float(tp_amount):.2f})\n"
-                f"   <b>Объем</b>: {metrics.get('volume_lots', 0):.2f} | "
-                f"<b>Риск</b>: ${metrics.get('risk_amount', 0):.2f} | "
-                f"<b>P&L</b>: ${float(pnl):+.2f} | "
-                f"<b>Маржа</b>: ${metrics.get('required_margin', 0):.2f}\n\n"
-            )
-            
-            # Суммируем общую стоимость позиции
-            total_position_value += Decimal(str(metrics.get('notional_value', 0)))
-            
-        except Exception as e:
-            logger.error(f"Ошибка форматирования сделки #{i}: {e}")
-            text += f"<b>#{i}</b> Ошибка отображения сделки\n\n"
-    
-    # Добавляем итоговую информацию
-    text += f"\n<b>📊 ИТОГО:</b>\n"
-    text += f"▪️ <b>Общая стоимость позиций</b>: ${total_position_value:,.2f}\n"
-    text += f"▪️ <b>Эффективный левередж</b>: {float(total_position_value / deposit):.1f}x\n"
-    text += f"▪️ <b>Средний Vol Score</b>: {portfolio_metrics.get('avg_liquidity_score', 50):.1f}%\n"
-    
-    text += "\n💎 PRO v3.0 | Smart • Fast • Reliable 🚀"
-    
-    keyboard = [
-        [InlineKeyboardButton("🗑 Очистить портфель", callback_data="clear_portfolio")],
-        [InlineKeyboardButton("📤 Экспорт отчета", callback_data="export_portfolio")],
-        [InlineKeyboardButton("🎯 Новая сделка", callback_data="single_trade")],
-        [InlineKeyboardButton("📊 Мультипозиция", callback_data="multi_trade_start")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-    ]
-    
-    if query:
-        await SafeMessageSender.edit_message_text(
-            query,
-            text,
-            InlineKeyboardMarkup(keyboard)
-        )
-    else:
-        await SafeMessageSender.send_message(
-            user_id,
-            text,
-            context,
-            InlineKeyboardMarkup(keyboard)
-        )
-
-# ---------------------------
-# ENHANCED SINGLE TRADE REPORT WITH PIVOT LEVELS
-# ---------------------------
-async def generate_enhanced_single_trade_report(trade: Dict, metrics: Dict, context: ContextTypes.DEFAULT_TYPE) -> str:
-    """Генерация улучшенного отчета для одиночной сделки с Pivot уровнями"""
-    try:
-        asset = trade['asset']
-        direction = trade['direction']
-        
-        # Получаем Pivot уровни
-        pivot_analyzer = PivotAnalyzer()
-        pivot_levels = await pivot_analyzer.get_pivot_levels(asset)
-        
-        # Получаем Vol Score
-        vol_score_analyzer = EnhancedVolScoreAnalyzer()
-        vol_score, vol_emoji = await vol_score_analyzer.calculate_vol_score(asset)
-        
-        # Форматируем отображение актива
-        asset_display = format_asset_display(asset, direction)
-        
-        # Создаем основной отчет
-        text = (
-            f"📊 <b>РАСЧЕТ ОДИНОЧНОЙ СДЕЛКИ v3.0</b>\n\n"
-            f"{asset_display} {vol_emoji}\n"
-            f"⚡ Vol Score: {vol_score}% 📊 (vs 20d avg)\n\n"
-            
-            f"🎯 <b>Вход</b>: {format_price_html(Decimal(str(trade['entry_price'])), asset)}\n"
-            f"▪️ <b>SL</b>: {format_price_html(Decimal(str(trade['stop_loss'])), asset)} "
-            f"(${metrics.get('stop_loss_amount', 0):.2f})\n"
-            f"▪️ <b>TP</b>: {format_price_html(Decimal(str(trade['take_profit'])), asset)} "
-            f"(${metrics.get('potential_profit', 0):.2f})\n\n"
-            
-            f"💰 <b>МЕТРИКИ:</b>\n"
-            f"▪️ <b>Объем</b>: {metrics.get('volume_lots', 0):.2f} лотов\n"
-            f"▪️ <b>Маржа</b>: ${metrics.get('required_margin', 0):.2f}\n"
-            f"▪️ <b>Риск</b>: ${metrics.get('risk_amount', 0):.2f} ({metrics.get('risk_percent', 0):.1f}%)\n"
-            f"▪️ <b>Прибыль</b>: ${metrics.get('potential_profit', 0):.2f}\n"
-            f"▪️ <b>R/R</b>: {metrics.get('rr_ratio', 0):.2f}\n"
-            f"▪️ <b>Текущий P&L</b>: ${metrics.get('current_pnl', 0):.2f}\n"
-            f"▪️ <b>Equity</b>: ${metrics.get('equity', 0):.2f}\n\n"
-            
-            f"⚙️ <b>ПАРАМЕТРЫ:</b>\n"
-            f"▪️ <b>Плечо</b>: {trade['leverage']}\n"
-            f"▪️ <b>Депозит</b>: ${trade['deposit']:.2f}\n"
-            f"▪️ <b>Текущая цена</b>: {format_price_html(Decimal(str(metrics.get('current_price', 0))), asset)}\n\n"
-        )
-        
-        # Добавляем Pivot уровни если они есть
-        if pivot_levels and ('H4' in pivot_levels or 'WEEKLY' in pivot_levels):
-            text += "<b>📈 PRICE LEVELS</b>\n"
-            text += "──────────────────\n"
-            
-            if 'H4' in pivot_levels and pivot_levels['H4']:
-                h4 = pivot_levels['H4']
-                text += f"▪️ H4 Pivot {format_price_html(Decimal(str(h4.get('pivot', 0))), asset)}\n"
-                text += f"   ▪️ R1  {format_price_html(Decimal(str(h4.get('r1', 0))), asset)} | S1 {format_price_html(Decimal(str(h4.get('s1', 0))), asset)}\n"
-                text += f"   ▪️ R2  {format_price_html(Decimal(str(h4.get('r2', 0))), asset)} | S2 {format_price_html(Decimal(str(h4.get('s2', 0))), asset)}\n"
-                text += f"   ▪️ R3  {format_price_html(Decimal(str(h4.get('r3', 0))), asset)} | S3 {format_price_html(Decimal(str(h4.get('s3', 0))), asset)}\n\n"
-            
-            if 'WEEKLY' in pivot_levels and pivot_levels['WEEKLY']:
-                weekly = pivot_levels['WEEKLY']
-                text += f"▪️ Weekly Pivot {format_price_html(Decimal(str(weekly.get('pivot', 0))), asset)}\n"
-                text += f"   ▪️ R1  {format_price_html(Decimal(str(weekly.get('r1', 0))), asset)} | S1 {format_price_html(Decimal(str(weekly.get('s1', 0))), asset)}\n"
-                text += f"   ▪️ R2  {format_price_html(Decimal(str(weekly.get('r2', 0))), asset)} | S2 {format_price_html(Decimal(str(weekly.get('s2', 0))), asset)}\n"
-                text += f"   ▪️ R3  {format_price_html(Decimal(str(weekly.get('r3', 0))), asset)} | S3 {format_price_html(Decimal(str(weekly.get('s3', 0))), asset)}\n\n"
-        
-        text += "💎 PRO v3.0 | Smart • Fast • Reliable 🚀"
-        
-        return text
-        
-    except Exception as e:
-        logger.error(f"Ошибка генерации отчета: {e}")
-        return "❌ Ошибка генерации отчета"
-
-# ---------------------------
-# UPDATED SINGLE TRADE TAKE PROFIT WITH ENHANCED REPORT
-# ---------------------------
-async def single_trade_take_profit_enhanced(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Тейк-профит с улучшенным отчетом"""
-    if 'entry_price' not in context.user_data or 'stop_loss' not in context.user_data:
-        logger.error("Missing data in single_trade_take_profit")
-        await SafeMessageSender.send_message(
-            update.message.chat_id,
-            "❌ Ошибка данных. Перезапускаем расчет.",
-            context,
-            InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Начать заново", callback_data="single_trade")]])
-        )
-        return ConversationHandler.END
-    
-    text = update.message.text.strip()
-    
-    try:
-        take_profit = Decimal(text.replace(',', '.'))
-        entry_price = Decimal(str(context.user_data['entry_price']))
-        direction = context.user_data['direction']
-        asset = context.user_data['asset']
-        
-        # Проверяем логику тейк-профита
-        if direction == 'LONG' and take_profit <= entry_price:
-            await SafeMessageSender.send_message(
-                update.message.chat_id,
-                "❌ Для LONG тейк-профит должен быть ВЫШЕ цены входа\nПопробуйте еще раз:",
-                context,
-                InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
-                ])
-            )
-            return SingleTradeState.TAKE_PROFIT.value
-        elif direction == 'SHORT' and take_profit >= entry_price:
-            await SafeMessageSender.send_message(
-                update.message.chat_id,
-                "❌ Для SHORT тейк-профит должен быть НИЖЕ цены входа\nПопробуйте еще раз:",
-                context,
-                InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
-                ])
-            )
-            return SingleTradeState.TAKE_PROFIT.value
-        
-        context.user_data['take_profit'] = float(take_profit)
-        
-        # Получаем метрики сделки
-        trade = context.user_data.copy()
-        deposit = Decimal(str(trade['deposit']))
-        metrics = await ProfessionalRiskCalculator.calculate_professional_metrics(
-            trade, deposit, trade['leverage'], "2%"
-        )
-        
-        trade['metrics'] = metrics
-        
-        # Сохраняем сделку
-        user_id = update.message.from_user.id
-        PortfolioManager.ensure_user(user_id)
-        PortfolioManager.add_single_trade(user_id, trade)
-        PortfolioManager.set_deposit_leverage(user_id, trade['deposit'], trade['leverage'])
-        
-        # Генерируем улучшенный отчет
-        report_text = await generate_enhanced_single_trade_report(trade, metrics, context)
-        
-        keyboard = [
-            [InlineKeyboardButton("📊 Портфель", callback_data="portfolio")],
-            [InlineKeyboardButton("🎯 Новая сделка", callback_data="single_trade")],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-        ]
-        
-        await SafeMessageSender.send_message(
-            update.message.chat_id,
-            report_text,
-            context,
-            InlineKeyboardMarkup(keyboard)
-        )
-        
-        context.user_data.clear()
-        return ConversationHandler.END
-        
-    except Exception as e:
-        logger.error(f"Ошибка в single_trade_take_profit: {e}")
-        await SafeMessageSender.send_message(
-            update.message.chat_id,
-            "❌ Введите число (например: 55000)\nПопробуйте еще раз:",
-            context,
-            InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
-            ])
-        )
-        return SingleTradeState.TAKE_PROFIT.value
-
-# ---------------------------
-# ENHANCED SHOW ASSET PRICE FUNCTION
-# ---------------------------
-async def show_asset_price_enhanced_v2(asset: str) -> str:
-    """Показ реальной цены актива с Vol Score и быстрыми Pivot уровнями"""
-    try:
-        # Получаем текущую цену
-        price, source = await enhanced_market_data.get_price_with_fallback(asset)
-        
-        # Получаем Vol Score
-        vol_score_analyzer = EnhancedVolScoreAnalyzer()
-        vol_score, vol_emoji = await vol_score_analyzer.calculate_vol_score(asset)
-        
-        # Получаем быстрые Pivot уровни (только H4)
-        pivot_analyzer = PivotAnalyzer()
-        pivot_levels = await pivot_analyzer.get_pivot_levels(asset)
-        
-        formatted_price = format_price_html(price, asset)
-        
-        # Определяем направление для эмодзи флага
-        if len(asset) == 6 and asset[:3].isalpha() and asset[3:].isalpha():
-            base_flag = get_currency_flag(asset[:3])
-            quote_flag = get_currency_flag(asset[3:])
-            flag_display = f"{base_flag}/{quote_flag}"
-        elif 'USDT' in asset:
-            flag_display = "₿"
-        elif asset in ['XAUUSD', 'GOLD']:
-            flag_display = "🥇"
-        elif asset in ['XAGUSD', 'SILVER']:
-            flag_display = "🥈"
-        else:
-            flag_display = "📊"
-        
-        # Формируем текст
-        text = f"{flag_display} Текущая цена: {formatted_price} ({source})\n"
-        text += f"{vol_emoji} Vol Score: {vol_score}% 📊 (vs 20d avg)\n\n"
-        
-        # Добавляем быстрые Pivot уровни если есть
-        if pivot_levels and 'H4' in pivot_levels and pivot_levels['H4']:
-            h4 = pivot_levels['H4']
-            text += "<b>⚡ БЫСТРЫЙ АНАЛИЗ (H4):</b>\n"
-            text += f"▪️ Pivot: {format_price_html(Decimal(str(h4.get('pivot', 0))), asset)}\n"
-            text += f"▪️ Уровни: R1={format_price_html(Decimal(str(h4.get('r1', 0))), asset)} "
-            text += f"| S1={format_price_html(Decimal(str(h4.get('s1', 0))), asset)}\n"
-        
-        return text
-        
-    except Exception as e:
-        logger.error(f"Ошибка получения цены для {asset}: {e}")
-        return "📈 Цена: временно недоступна\n"
-
-# ---------------------------
-# ENHANCED FUTURE FEATURES HANDLER
-# ---------------------------
 @retry_on_timeout(max_retries=2, delay=1.0)
-async def future_features_enhanced(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик раздела 'Будущие возможности' - полная версия"""
+async def multi_trade_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выбор плеча для мультисделки"""
     query = update.callback_query
     await SafeMessageSender.answer_callback_query(query)
     
+    leverage = query.data.replace('mlev_', '')
+    context.user_data['leverage'] = leverage
+    
     text = (
-        "🚀 <b>БУДУЩИЕ ВОЗМОЖНОСТИ PRO v4.0</b>\n\n"
-        
-        "🔧 <b>В РАЗРАБОТКЕ НА 2024:</b>\n"
-        "• 🤖 <b>AG Assistant</b> - ИИ-ассистент для анализа рынка в реальном времени\n"
-        "• 📈 <b>ML Прогнозирование</b> - нейросети для предсказания движения цены\n"
-        "• 🎯 <b>Авто-сигналы</b> - автоматическая генерация торговых сигналов\n"
-        "• ⚡ <b>Стратегии</b> - библиотека готовых торговых стратегий\n\n"
-        
-        "✅ <b>РЕАЛИЗОВАНО В v3.0:</b>\n"
-        "• 🔄 <b>Реальные котировки</b> - Binance, FMP, Metal Price, TAAPI, OANDA\n"
-        "• 📊 <b>Pivot уровни</b> - H4 и Weekly через TAAPI.IO и OANDA\n"
-        "• ⚡ <b>Vol Score система</b> - 0-100% сравнение с 20-дневной историей\n"
-        "• 💰 <b>Точные расчеты</b> - Decimal для финансовой точности\n"
-        "• 🌍 <b>78+ активов</b> - Forex, Crypto, Stocks, Indices, Metals, Energy\n\n"
-        
-        "📊 <b>РАСШИРЕННАЯ АНАЛИТИКА (Q2 2024):</b>\n"
-        "• 📈 <b>Корреляция активов</b> - матрица корреляции портфеля\n"
-        "• 📉 <b>Риск-метрики</b> - VaR, Sharpe Ratio, Max Drawdown\n"
-        "• 💹 <b>Технический анализ</b> - 50+ индикаторов в реальном времени\n"
-        "• 🏦 <b>Фундаментальный анализ</b> - отчеты компаний, дивиденды\n\n"
-        
-        "⚡ <b>АВТОМАТИЧЕСКАЯ ТОРГОВЛЯ (Q3 2024):</b>\n"
-        "• 🤖 <b>API Интеграция</b> - Binance, Bybit, FTX, MetaTrader 5\n"
-        "• 🎯 <b>Авто-исполнение</b> - автоматическое открытие/закрытие сделок\n"
-        "• 📱 <b>Мониторинг</b> - push-уведомления, алерты, отчеты\n"
-        "• 🔄 <b>Копирование сделок</b> - копирование сделок успешных трейдеров\n\n"
-        
-        "📱 <b>МОБИЛЬНОЕ ПРИЛОЖЕНИЕ (Q4 2024):</b>\n"
-        "• 📲 <b>iOS & Android</b> - нативные приложения\n"
-        "• 🏃 <b>Оффлайн режим</b> - работа без интернета\n"
-        "• 📊 <b>Виджеты</b> - быстрый доступ к портфелю\n"
-        "• 🔔 <b>Пуш-уведомления</b> - алерты прямо на телефон\n\n"
-        
-        "🛡 <b>БЕЗОПАСНОСТЬ И НАДЕЖНОСТЬ:</b>\n"
-        "• 🔐 <b>2FA</b> - двухфакторная аутентификация\n"
-        "• 🔒 <b>Шифрование</b> - end-to-end шифрование данных\n"
-        "• ☁️ <b>Бэкапы</b> - автоматическое резервное копирование\n"
-        "• 📍 <b>Гео-блокировка</b> - защита от несанкционированного доступа\n\n"
-        
-        "💱 <b>МУЛЬТИВАЛЮТНОСТЬ:</b>\n"
-        "• 🌍 <b>30+ валют</b> - поддержка основных валют мира\n"
-        "• 🔄 <b>Автоконвертация</b> - автоматическая конвертация валют\n"
-        "• 📍 <b>Локализация</b> - поддержка 15 языков\n\n"
-        
-        "🎓 <b>ОБРАЗОВАТЕЛЬНАЯ ПЛАТФОРМА:</b>\n"
-        "• 📹 <b>Видеокурсы</b> - от основ до продвинутых стратегий\n"
-        "• 📊 <b>Торговые симуляторы</b> - тренировка без риска\n"
-        "• 📈 <b>Аналитика</b> - ежедневные обзоры рынка\n"
-        "• 👨‍🏫 <b>Менторство</b> - персональные консультации\n\n"
-        
-        "<i>Следите за обновлениями! Мы постоянно добавляем новые функции.</i>\n\n"
-        
-        "💎 <b>PRO v3.0 | Enterprise Edition 🚀</b>\n"
-        "<i>Поддержите развитие проекта для ускорения реализации планов!</i>"
+        "Шаг 3/9: <b>Выберите категорию актива для сделки #{}</b>:\n\n"
+        "Укажите тип актива:".format(len(context.user_data['trades']) + 1)
     )
     
-    keyboard = [
-        [InlineKeyboardButton("💖 Поддержать разработку", callback_data="donate_start")],
-        [InlineKeyboardButton("🎯 Профессиональный расчет", callback_data="pro_calculation")],
-        [InlineKeyboardButton("📊 Посмотреть портфель", callback_data="portfolio")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-    ]
+    keyboard = []
+    for category in ASSET_CATEGORIES.keys():
+        keyboard.append([InlineKeyboardButton(category, callback_data=f"mcat_{category}")])
+    
+    keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")])
     
     await SafeMessageSender.edit_message_text(
         query,
         text,
         InlineKeyboardMarkup(keyboard)
     )
+    return MultiTradeState.CATEGORY.value
 
 # ---------------------------
-# EXPORT PORTFOLIO ENHANCED
-# ---------------------------
-@retry_on_timeout(max_retries=2, delay=1.0)
-async def export_portfolio_enhanced(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Экспорт портфеля в текстовый формат"""
-    query = update.callback_query
-    await SafeMessageSender.answer_callback_query(query, "Готовим отчет...")
-    
-    user_id = query.from_user.id
-    PortfolioManager.ensure_user(user_id)
-    user_portfolio = PortfolioManager.user_data[user_id]
-    
-    trades = user_portfolio.get('multi_trades', []) + user_portfolio.get('single_trades', [])
-    
-    if not trades:
-        await query.answer("❌ Портфель пуст для экспорта", show_alert=True)
-        return
-    
-    deposit = Decimal(str(user_portfolio['deposit']))
-    leverage = user_portfolio['leverage']
-    
-    # Готовим данные для экспорта
-    export_text = "=" * 60 + "\n"
-    export_text += "PRO RISK CALCULATOR v3.0 - ОТЧЕТ ПОРТФЕЛЯ\n"
-    export_text += f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-    export_text += "=" * 60 + "\n\n"
-    
-    export_text += f"Депозит: ${deposit:,.2f}\n"
-    export_text += f"Плечо: {leverage}\n"
-    export_text += f"Количество сделок: {len(trades)}\n\n"
-    
-    # Агрегированные метрики
-    total_margin = Decimal('0')
-    total_pnl = Decimal('0')
-    total_risk = Decimal('0')
-    total_profit = Decimal('0')
-    
-    for i, trade in enumerate(trades, 1):
-        try:
-            metrics = await ProfessionalRiskCalculator.calculate_professional_metrics(
-                trade, deposit, leverage, "2%"
-            )
-            
-            export_text += f"СДЕЛКА #{i}\n"
-            export_text += f"Актив: {trade['asset']}\n"
-            export_text += f"Направление: {trade['direction']}\n"
-            export_text += f"Вход: {trade['entry_price']}\n"
-            export_text += f"SL: {trade['stop_loss']}\n"
-            export_text += f"TP: {trade['take_profit']}\n"
-            export_text += f"Объем: {metrics.get('volume_lots', 0):.2f} лотов\n"
-            export_text += f"Маржа: ${metrics.get('required_margin', 0):.2f}\n"
-            export_text += f"Риск: ${metrics.get('risk_amount', 0):.2f}\n"
-            export_text += f"P&L: ${metrics.get('current_pnl', 0):.2f}\n"
-            export_text += f"Прибыль: ${metrics.get('potential_profit', 0):.2f}\n"
-            export_text += "-" * 40 + "\n"
-            
-            total_margin += Decimal(str(metrics.get('required_margin', 0)))
-            total_pnl += Decimal(str(metrics.get('current_pnl', 0)))
-            total_risk += Decimal(str(metrics.get('risk_amount', 0)))
-            total_profit += Decimal(str(metrics.get('potential_profit', 0)))
-            
-        except Exception as e:
-            logger.error(f"Ошибка экспорта сделки #{i}: {e}")
-            export_text += f"СДЕЛКА #{i} - Ошибка экспорта\n"
-            export_text += "-" * 40 + "\n"
-    
-    # Итоговые метрики
-    equity = deposit + total_pnl
-    free_margin = equity - total_margin
-    margin_level = (equity / total_margin * Decimal('100')) if total_margin > Decimal('0') else Decimal('0')
-    
-    export_text += "\n" + "=" * 60 + "\n"
-    export_text += "ИТОГОВЫЕ МЕТРИКИ ПОРТФЕЛЯ:\n"
-    export_text += "=" * 60 + "\n\n"
-    export_text += f"Общая маржа: ${total_margin:,.2f}\n"
-    export_text += f"Общий P&L: ${total_pnl:,.2f}\n"
-    export_text += f"Общий риск: ${total_risk:,.2f}\n"
-    export_text += f"Потенциальная прибыль: ${total_profit:,.2f}\n"
-    export_text += f"Equity: ${equity:,.2f}\n"
-    export_text += f"Свободная маржа: ${free_margin:,.2f}\n"
-    export_text += f"Уровень маржи: {margin_level:.1f}%\n"
-    export_text += f"Дата отчета: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
-    export_text += "\n" + "=" * 60 + "\n"
-    export_text += "PRO RISK CALCULATOR v3.0 | ENTERPRISE EDITION\n"
-    export_text += "=" * 60 + "\n"
-    
-    # Сохраняем в файл
-    filename = f"portfolio_export_{user_id}_{int(time.time())}.txt"
-    with open(filename, 'w', encoding='utf-8') as f:
-        f.write(export_text)
-    
-    # Отправляем файл пользователю
-    try:
-        with open(filename, 'rb') as file:
-            await context.bot.send_document(
-                chat_id=user_id,
-                document=file,
-                filename=filename,
-                caption="📤 Ваш отчет портфеля готов!"
-            )
-        
-        # Удаляем временный файл
-        os.remove(filename)
-        
-    except Exception as e:
-        logger.error(f"Ошибка отправки файла: {e}")
-        await query.answer("❌ Ошибка экспорта отчета", show_alert=True)
-
-# ---------------------------
-# UPDATE CALLBACK ROUTER FOR ENHANCED FEATURES
+# ENHANCED CALLBACK ROUTER
 # ---------------------------
 @retry_on_timeout(max_retries=2, delay=1.0)
 async def callback_router_enhanced(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2912,17 +2922,17 @@ async def callback_router_enhanced(update: Update, context: ContextTypes.DEFAULT
         if data == "main_menu" or data == "main_menu_save":
             await main_menu_save_handler(update, context)
         elif data == "portfolio":
-            await show_portfolio_enhanced(update, context)
+            await show_portfolio(update, context)
         elif data == "pro_calculation":
             await pro_calculation_handler(update, context)
         elif data == "future_features":
-            await future_features_enhanced(update, context)
+            await future_features_handler(update, context)
         elif data == "pro_info":
             await pro_info_command(update, context)
         elif data == "clear_portfolio":
             await clear_portfolio_handler(update, context)
         elif data == "export_portfolio":
-            await export_portfolio_enhanced(update, context)
+            await export_portfolio_handler(update, context)
         elif data == "donate_start":
             await DonationSystem.show_donation_menu(update, context)
         elif data == "donate_usdt":
@@ -2934,35 +2944,226 @@ async def callback_router_enhanced(update: Update, context: ContextTypes.DEFAULT
         elif data == "multi_trade_start":
             await multi_trade_start(update, context)
         
-        # Остальные обработчики остаются без изменений
-        # ... (остальная часть callback router из первого сообщения)
+        # Одиночные сделки - категории и подкатегории
+        elif data.startswith("cat_"):
+            await single_trade_asset_category(update, context)
+        elif data.startswith("s_subcat_"):
+            await single_trade_asset_subcategory(update, context)
+        elif data == "asset_manual":
+            await SafeMessageSender.edit_message_text(
+                query,
+                "Шаг 5/8: ✍️ Введите название актива (например: BTCUSDT):",
+                InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Назад", callback_data="back_to_categories")],
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+                ])
+            )
+            context.user_data['waiting_for_manual_asset'] = True
+            return SingleTradeState.ASSET.value
         
+        # Одиночные сделки - активы и направления
+        elif data.startswith("asset_"):
+            asset = data.replace('asset_', '')
+            context.user_data['asset'] = asset
+            
+            # Показываем выбор направления
+            text = (
+                f"Шаг 6/8: <b>Выберите направление для {asset}</b>\n\n"
+                f"{await show_asset_price_enhanced(asset)}"
+                "Укажите направление сделки:"
+            )
+            
+            keyboard = [
+                [InlineKeyboardButton("🔺 LONG (покупка)", callback_data="dir_LONG")],
+                [InlineKeyboardButton("🔻 SHORT (продажа)", callback_data="dir_SHORT")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_asset")],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu_save")]
+            ]
+            
+            await SafeMessageSender.edit_message_text(
+                query,
+                text,
+                InlineKeyboardMarkup(keyboard)
+            )
+            return SingleTradeState.DIRECTION.value
+        
+        elif data.startswith("dir_"):
+            await enhanced_single_trade_direction(update, context)
+        elif data == "back_to_asset":
+            await enhanced_single_trade_asset(update, context)
+        elif data == "back_to_categories":
+            await single_trade_leverage(update, context)
+        elif data.startswith("lev_"):
+            await single_trade_leverage(update, context)
+        
+        # Мультисделки
+        elif data.startswith("mcat_"):
+            category = data.replace('mcat_', '')
+            context.user_data['category'] = category
+            await multi_trade_leverage(update, context)
+        elif data.startswith("mlev_"):
+            await multi_trade_leverage(update, context)
+        
+        else:
+            await query.answer("Команда не распознана")
+            
     except Exception as e:
         logger.error(f"Error in enhanced callback router: {e}")
         await query.answer("❌ Произошла ошибка")
 
 # ---------------------------
-# ИНСТРУМЕНТЫ СПЕЦИФИКАЦИИ (дополнение)
+# SETUP CONVERSATION HANDLERS
 # ---------------------------
-class InstrumentSpecs:
-    """Расширенная база спецификаций финансовых инструментов"""
+def setup_conversation_handlers(application: Application):
+    """Настройка обработчиков диалогов"""
     
-    SPECS = {
-        # ... (существующие спецификации из первого сообщения)
-        # Дополняем спецификации для новых активов
-    }
+    # Одиночная сделка
+    single_trade_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(single_trade_start, pattern="^single_trade$")],
+        states={
+            SingleTradeState.DEPOSIT.value: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_deposit)
+            ],
+            SingleTradeState.LEVERAGE.value: [
+                CallbackQueryHandler(single_trade_leverage, pattern="^lev_")
+            ],
+            SingleTradeState.CATEGORY.value: [
+                CallbackQueryHandler(single_trade_asset_category, pattern="^cat_")
+            ],
+            SingleTradeState.SUBCATEGORY.value: [
+                CallbackQueryHandler(single_trade_asset_subcategory, pattern="^s_subcat_")
+            ],
+            SingleTradeState.ASSET.value: [
+                CallbackQueryHandler(enhanced_single_trade_asset, pattern="^back_to_asset$"),
+                CallbackQueryHandler(lambda u, c: None, pattern="^asset_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, 
+                    lambda update, context: (
+                        context.user_data.__setitem__('asset', update.message.text.strip()),
+                        enhanced_single_trade_direction.__wrapped__(update, context)
+                        if hasattr(enhanced_single_trade_direction, '__wrapped__') 
+                        else enhanced_single_trade_direction(update, context)
+                    ) if context.user_data.get('waiting_for_manual_asset') 
+                    else single_trade_deposit(update, context)
+                )
+            ],
+            SingleTradeState.DIRECTION.value: [
+                CallbackQueryHandler(enhanced_single_trade_direction, pattern="^dir_"),
+                CallbackQueryHandler(enhanced_single_trade_asset, pattern="^back_to_asset$")
+            ],
+            SingleTradeState.ENTRY.value: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_entry)
+            ],
+            SingleTradeState.STOP_LOSS.value: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_stop_loss)
+            ],
+            SingleTradeState.TAKE_PROFIT.value: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, single_trade_take_profit)
+            ]
+        },
+        fallbacks=[
+            CommandHandler("start", start_command),
+            CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
+        ],
+        allow_reentry=True
+    )
     
-    @classmethod
-    def get_specs(cls, symbol: str) -> Dict[str, Any]:
-        """Получение спецификаций для инструмента"""
-        # ... (существующий код из первого сообщения)
-        pass
+    application.add_handler(single_trade_handler)
+    
+    # Мультисделка (упрощенная версия)
+    multi_trade_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(multi_trade_start, pattern="^multi_trade_start$")],
+        states={
+            MultiTradeState.DEPOSIT.value: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, 
+                    lambda update, context: single_trade_deposit(update, context))
+            ],
+            MultiTradeState.LEVERAGE.value: [
+                CallbackQueryHandler(multi_trade_leverage, pattern="^mlev_")
+            ],
+            MultiTradeState.CATEGORY.value: [
+                CallbackQueryHandler(multi_trade_leverage, pattern="^mcat_")
+            ]
+        },
+        fallbacks=[
+            CommandHandler("start", start_command),
+            CallbackQueryHandler(main_menu_save_handler, pattern="^main_menu_save$")
+        ],
+        allow_reentry=True
+    )
+    
+    application.add_handler(multi_trade_handler)
 
 # ---------------------------
-# ОБНОВЛЕННЫЙ MAIN ENHANCED
+# WEBHOOK FUNCTIONS
 # ---------------------------
-async def main_enhanced_v2():
-    """Улучшенная основная функция с обновленными обработчиками"""
+async def set_webhook(application: Application) -> bool:
+    """Установка вебхука"""
+    try:
+        webhook_url = f"{WEBHOOK_URL}{WEBHOOK_PATH}"
+        await application.bot.set_webhook(
+            url=webhook_url,
+            drop_pending_updates=True
+        )
+        logger.info(f"Webhook установлен: {webhook_url}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка установки webhook: {e}")
+        return False
+
+async def start_http_server(application: Application):
+    """Запуск HTTP сервера для вебхуков"""
+    app = web.Application()
+    
+    # Обработчик вебхука
+    async def handle_webhook(request):
+        if request.match_info.get('token') == TOKEN:
+            data = await request.json()
+            update = Update.de_json(data, application.bot)
+            await application.process_update(update)
+            return web.Response(text="OK")
+        return web.Response(status=403, text="Forbidden")
+    
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+    
+    # Health check endpoint
+    async def health_check(request):
+        return web.Response(text="PRO Risk Calculator v3.0 is running")
+    
+    app.router.add_get('/health', health_check)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    
+    logger.info(f"HTTP сервер запущен на порту {PORT}")
+
+# ---------------------------
+# CLEANUP ALL SESSIONS
+# ---------------------------
+async def cleanup_all_sessions():
+    """Закрытие ВСЕХ сессий"""
+    try:
+        # Закрытие основной сессии market data
+        if enhanced_market_data.session and not enhanced_market_data.session.closed:
+            await enhanced_market_data.session.close()
+        
+        # Закрытие сессий из дополнительных анализаторов
+        if pivot_analyzer.session and not pivot_analyzer.session.closed:
+            await pivot_analyzer.session.close()
+        
+        if vol_score_analyzer.session and not vol_score_analyzer.session.closed:
+            await vol_score_analyzer.session.close()
+            
+        logger.info("✅ Все сессии успешно закрыты")
+    except Exception as e:
+        logger.error(f"Ошибка при закрытии сессий: {e}")
+
+# ---------------------------
+# MAIN ENHANCED FUNCTION
+# ---------------------------
+async def main_enhanced():
+    """Улучшенная основная функция v3.0"""
     max_retries = 3
     retry_delay = 5
     
@@ -3030,40 +3231,28 @@ async def main_enhanced_v2():
                 raise
 
 # ---------------------------
-# GLOBAL INSTANCES
-# ---------------------------
-enhanced_market_data = EnhancedMarketDataProvider()
-margin_calculator = ProfessionalMarginCalculator()
-pivot_analyzer = PivotAnalyzer()
-vol_score_analyzer = EnhancedVolScoreAnalyzer()
-
-# ---------------------------
-# ОБНОВЛЕННЫЙ ЗАПУСК ПРИЛОЖЕНИЯ
+# ЗАПУСК ПРИЛОЖЕНИЯ
 # ---------------------------
 if __name__ == "__main__":
     logger.info("🚀 ЗАПУСК PRO RISK CALCULATOR v3.0 ENTERPRISE EDITION")
+    logger.info("✅ ОБЪЕДИНЕННАЯ ВЕРСИЯ: исправлены все ошибки NameError")
     logger.info("✅ PIVOT УРОВНИ: TAAPI.IO + OANDA API интеграция")
     logger.info("✅ VOL SCORE: Реальный расчет на основе исторических данных")
-    logger.info("✅ ПРОФЕССИОНАЛЬНЫЕ ОТЧЕТЫ: Price Levels, копируемые котировки")
-    logger.info("✅ ЭКСПОРТ ПОРТФЕЛЯ: Текстовый формат с полной аналитикой")
-    logger.info("✅ УЛУЧШЕННАЯ НАВИГАЦИЯ: Обновленные callback handlers")
-    logger.info("📊 РАСШИРЕННАЯ АНАЛИТИКА: 78+ активов с Pivot уровнями")
-    logger.info("🌐 МНОГОИСТОЧНИКОВЫЕ ДАННЫЕ: 5+ API для максимальной точности")
-    logger.info("💎 ПРОФЕССИОНАЛЬНЫЙ ИНСТРУМЕНТ: Готов к продакшену")
+    logger.info("✅ DECIMAL РАСЧЕТЫ: точные финансовые вычисления")
+    logger.info("✅ FMP API ИСПРАВЛЕН: правильный формат &apikey=")
+    logger.info("✅ УБРАНА ФУНКЦИЯ ВОССТАНОВЛЕНИЯ: неработающий функционал")
+    logger.info("📊 РАСШИРЕННЫЙ СПИСОК АКТИВОВ: 78+ позиций")
+    logger.info("🌐 ПРОФЕССИОНАЛЬНЫЙ РАСЧЕТ: Фиксированный риск 2%")
+    logger.info("🔧 СИСТЕМА ГОТОВА К ПРОДАКШЕНУ")
     
     try:
-        asyncio.run(main_enhanced_v2())
+        asyncio.run(main_enhanced())
     except KeyboardInterrupt:
         logger.info("⏹ Бот остановлен пользователем")
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
         try:
-            # Закрываем все сессии
-            asyncio.run(cleanup_session())
-            if pivot_analyzer.session and not pivot_analyzer.session.closed:
-                asyncio.run(pivot_analyzer.session.close())
-            if vol_score_analyzer.session and not vol_score_analyzer.session.closed:
-                asyncio.run(vol_score_analyzer.session.close())
+            asyncio.run(cleanup_all_sessions())
         except Exception as cleanup_err:
-            logger.error(f"Ошибка при cleanup сессий: {cleanup_err}")
+            logger.error(f"Ошибка при cleanup сессии: {cleanup_err}")
         raise
